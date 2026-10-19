@@ -29,6 +29,23 @@ jobs:
           gradle-version: '8.7'
       - name: Build arm64 release APK
         run: gradle --no-daemon assembleRelease
+      - name: Sign release APK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)
+          test -n "$apk"
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/release.keystore" ]; then
+            keytool -genkeypair -v -keystore "$HOME/.android/release.keystore" \
+              -storepass android -keypass android -alias puzhe \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=PuZhe Chess, OU=Chess Lab, O=DeepShawn, C=CN"
+          fi
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks "$HOME/.android/release.keystore" --ks-pass pass:android \
+            --key-pass pass:android "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
       - name: Normalize APK name
         run: |
           apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)
