@@ -48,6 +48,7 @@ class MainActivity : Activity() {
         status = label("Stockfish 19 · 正在初始化", 12f, GREEN).apply { setPadding(dp(13), dp(10), dp(13), dp(10)); background = rounded(PANEL, 12, LINE) }
         root.addView(status, LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(12) })
         board = ChessBoardView(this)
+        board.applyTheme(savedTheme)
         root.addView(board, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(10); bottomMargin = dp(8) })
 
         val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(13), dp(10), dp(13), dp(10)); background = rounded(PANEL, 15, LINE) }
@@ -66,7 +67,7 @@ class MainActivity : Activity() {
         engine = EngineController(this); restoreSession(); CoroutineScope(Dispatchers.Main).launch { status.text = if (engine.start()) "Stockfish 19 · 本地 UCI · ${level.elo} Elo" else "本地引擎未就绪 · 请放入 Stockfish 19" }
     }
     private fun showMenu() { val menu = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(10)) }; menu.addView(label("谱着 · 工作台菜单", 20f).apply { setTypeface(null, Typeface.BOLD); setPadding(0, dp(4), 0, dp(14)) }); menu.addView(label("快速切换对局模式、主题与引擎偏好", 12f, MUTED).apply { setPadding(0, 0, 0, dp(12)) }); val dialog = AlertDialog.Builder(this).setView(menu).create(); menu.addView(button(if (analysis) "切换到对局模式" else "切换到分析模式", true) { analysis = !analysis; status.text = if (analysis) "分析模式 · ${level.name}" else "对局模式 · ${level.name}"; dialog.dismiss() }, LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(8) }); menu.addView(button("主题：深夜 / 晨雾 / 暮色") { chooseTheme(); dialog.dismiss() }, LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(8) }); menu.addView(button("引擎偏好：二选、三选或纯一选") { choosePreference(); dialog.dismiss() }, LinearLayout.LayoutParams(-1, dp(46))); dialog.setOnShowListener { dialog.window?.setBackgroundDrawable(rounded(PANEL, 20, LINE)) }; dialog.show() }
-    private fun chooseTheme() { AlertDialog.Builder(this).setTitle("选择主题").setItems(arrayOf("深夜 · 森林绿", "晨雾 · 浅色", "暮色 · 琥珀紫")) { _, which -> prefs.edit().putInt("theme", which).apply(); window.statusBarColor = if (which == 1) 0xffeef5f2.toInt() else if (which == 2) 0xff281b2b.toInt() else BG; status.text = "主题已切换 · ${if (which == 1) "晨雾" else if (which == 2) "暮色" else "深夜"}" }.show() }
+    private fun chooseTheme() { AlertDialog.Builder(this).setTitle("选择主题").setItems(arrayOf("深夜 · 森林绿", "晨雾 · 浅色", "暮色 · 琥珀紫")) { _, which -> prefs.edit().putInt("theme", which).apply(); board.applyTheme(which); window.statusBarColor = if (which == 1) 0xffeef5f2.toInt() else if (which == 2) 0xff281b2b.toInt() else BG; status.text = "主题已切换 · ${if (which == 1) "晨雾" else if (which == 2) "暮色" else "深夜"}" }.show() }
     private fun choosePreference() { AlertDialog.Builder(this).setTitle("引擎偏好").setSingleChoiceItems(arrayOf("二选偏好 · 真人感", "一选主线 · 稳定", "三选偏好 · 探索", "纯一选 · 复盘"), 0) { dialog, _ -> dialog.dismiss(); status.text = "引擎偏好已更新 · ${level.name}" }.show() }
     private fun saveSession() { prefs.edit().putInt("moves", board.moveCount()).putString("fen", board.fen).putString("pgn", board.pgn()).apply(); status.text = "对局已保存 · 可继续" }
     private fun clearSession() { prefs.edit().clear().apply() }
@@ -76,9 +77,52 @@ class MainActivity : Activity() {
 }
 
 class ChessBoardView(c: Context) : View(c) {
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG); private val light = Color.rgb(220, 232, 220); private val dark = Color.rgb(79, 125, 105); private var moves = 0; private var selectedCol = -1; private var selectedRow = -1; var fen = "startpos"; private var moveLog = mutableListOf<String>()
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var light = Color.rgb(220, 232, 220)
+    private var dark = Color.rgb(79, 125, 105)
+    private var moves = 0
+    private var selectedCol = -1
+    private var selectedRow = -1
+    private var pieces = initialPosition()
+    var fen = "startpos"
+    private var moveLog = mutableListOf<String>()
     init { setBackgroundColor(BG); isFocusable = true }
-    override fun onDraw(canvas: Canvas) { super.onDraw(canvas); val size = min(width, height).toFloat(); val left = (width - size) / 2f; val top = (height - size) / 2f; canvas.save(); canvas.translate(left, top); val s = size / 8f; p.setShadowLayer(18f, 0f, 8f, 0xaa000000.toInt()); for (r in 0..7) for (col in 0..7) { p.color = if ((r + col) % 2 == 0) light else dark; canvas.drawRect(col * s, r * s, col * s + s, r * s + s, p) }; p.clearShadowLayer(); if (selectedCol >= 0) { p.color = 0x6676e0b5; canvas.drawRect(selectedCol * s, selectedRow * s, selectedCol * s + s, selectedRow * s + s, p) }; p.textAlign = Paint.Align.CENTER; p.typeface = Typeface.create("serif", Typeface.NORMAL); p.textSize = s * .68f; val pieces = arrayOf("♜♞♝♛♚♝♞♜", "♟♟♟♟♟♟♟♟", "", "", "", "", "♙♙♙♙♙♙♙♙", "♖♘♗♕♔♗♘♖"); for (r in 0..7) for (col in 0..7) { val q = pieces[r].getOrNull(col) ?: ' '; if (q != ' ') { p.color = if (r < 2) 0xff15211d.toInt() else 0xfffffdf2.toInt(); p.setShadowLayer(2f, 0f, 2f, Color.BLACK); canvas.drawText(q.toString(), col * s + s / 2, r * s + s * .73f, p); p.clearShadowLayer() } }; canvas.restore() }
-    override fun onTouchEvent(e: MotionEvent): Boolean { if (e.action == MotionEvent.ACTION_UP) { val size = min(width, height).toFloat(); val left = (width - size) / 2f; val top = (height - size) / 2f; if (e.x >= left && e.x <= left + size && e.y >= top && e.y <= top + size) { val cell = size / 8f; selectedCol = ((e.x - left) / cell).toInt().coerceIn(0, 7); selectedRow = ((e.y - top) / cell).toInt().coerceIn(0, 7); moves++; moveLog.add("move$moves"); invalidate() } }; return true }
-    fun reset() { moves = 0; moveLog.clear(); selectedCol = -1; selectedRow = -1; fen = "startpos"; invalidate() }; fun moveCount() = moves; fun pgn() = moveLog.joinToString(" "); fun restore(savedFen: String?, count: Int, pgn: String) { fen = savedFen ?: "startpos"; moves = count; moveLog = if (pgn.isBlank()) mutableListOf() else pgn.split(" ").toMutableList(); invalidate() }
+
+    private fun initialPosition() = arrayOf(
+        charArrayOf('r','n','b','q','k','b','n','r'), charArrayOf('p','p','p','p','p','p','p','p'),
+        CharArray(8), CharArray(8), CharArray(8), CharArray(8),
+        charArrayOf('P','P','P','P','P','P','P','P'), charArrayOf('R','N','B','Q','K','B','N','R')
+    )
+    private fun glyph(piece: Char) = mapOf('r' to '♜','n' to '♞','b' to '♝','q' to '♛','k' to '♚','p' to '♟','R' to '♖','N' to '♘','B' to '♗','Q' to '♕','K' to '♔','P' to '♙')[piece] ?: ' '
+    private fun isWhite(piece: Char) = piece in 'A'..'Z'
+    private fun square(row: Int, col: Int) = "${'a' + col}${8 - row}"
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val size = min(width, height).toFloat(); val left = (width - size) / 2f; val top = (height - size) / 2f
+        canvas.save(); canvas.translate(left, top); val cell = size / 8f
+        p.setShadowLayer(18f, 0f, 8f, 0xaa000000.toInt())
+        for (row in 0..7) for (col in 0..7) { p.color = if ((row + col) % 2 == 0) light else dark; canvas.drawRect(col * cell, row * cell, col * cell + cell, row * cell + cell, p) }
+        p.clearShadowLayer()
+        if (selectedRow >= 0) { p.color = 0x6676e0b5; canvas.drawRect(selectedCol * cell, selectedRow * cell, selectedCol * cell + cell, selectedRow * cell + cell, p) }
+        p.textAlign = Paint.Align.CENTER; p.typeface = Typeface.create("serif", Typeface.NORMAL); p.textSize = cell * .68f
+        for (row in 0..7) for (col in 0..7) { val piece = pieces[row][col]; if (piece != '\u0000') { p.color = if (isWhite(piece)) 0xfffffdf2.toInt() else 0xff15211d.toInt(); p.setShadowLayer(2f, 0f, 2f, Color.BLACK); canvas.drawText(glyph(piece).toString(), col * cell + cell / 2, row * cell + cell * .73f, p); p.clearShadowLayer() } }
+        canvas.restore()
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.action != MotionEvent.ACTION_UP) return true
+        val size = min(width, height).toFloat(); val left = (width - size) / 2f; val top = (height - size) / 2f
+        if (event.x !in left..(left + size) || event.y !in top..(top + size)) return true
+        val cell = size / 8f; val col = ((event.x - left) / cell).toInt().coerceIn(0, 7); val row = ((event.y - top) / cell).toInt().coerceIn(0, 7); val target = pieces[row][col]
+        if (selectedRow < 0) { if (target != '\u0000' && isWhite(target)) { selectedRow = row; selectedCol = col; invalidate() }; return true }
+        if (row == selectedRow && col == selectedCol) { selectedRow = -1; selectedCol = -1; invalidate(); return true }
+        if (target != '\u0000' && isWhite(target)) { selectedRow = row; selectedCol = col; invalidate(); return true }
+        val moving = pieces[selectedRow][selectedCol]; pieces[row][col] = moving; pieces[selectedRow][selectedCol] = '\u0000'; moveLog.add("${square(selectedRow, selectedCol)}-${square(row, col)}"); moves++; selectedRow = -1; selectedCol = -1; invalidate(); return true
+    }
+    fun applyTheme(theme: Int) { light = if (theme == 1) Color.rgb(236, 244, 239) else if (theme == 2) Color.rgb(241, 220, 196) else Color.rgb(220, 232, 220); dark = if (theme == 1) Color.rgb(143, 180, 157) else if (theme == 2) Color.rgb(137, 107, 120) else Color.rgb(79, 125, 105); invalidate() }
+    fun reset() { moves = 0; moveLog.clear(); selectedRow = -1; selectedCol = -1; pieces = initialPosition(); fen = "startpos"; invalidate() }
+    fun moveCount() = moves
+    fun pgn() = moveLog.joinToString(" ")
+    fun restore(savedFen: String?, count: Int, pgn: String) { fen = savedFen ?: "startpos"; moves = count; moveLog = if (pgn.isBlank()) mutableListOf() else pgn.split(" ").toMutableList(); invalidate() }
 }
