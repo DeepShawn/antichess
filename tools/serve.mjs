@@ -8,7 +8,8 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/ja
 const port = +process.env.PORT || 4173;
 
 createServer(async (req, res) => {
-  const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^(\.\.[/\\])+/, '');
+  let path;
+  try { path = normalize(decodeURIComponent(req.url.split('?')[0])).replace(/^(\.\.[/\\])+/, ''); } catch { res.writeHead(400); res.end('Bad request'); return; }
   const file = join(root, path.endsWith('/') ? path + 'index.html' : path);
   try {
     const body = await readFile(file);

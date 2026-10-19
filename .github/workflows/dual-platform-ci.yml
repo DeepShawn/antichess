@@ -21,7 +21,7 @@ jobs:
           node tools/serve.mjs >/tmp/puzhe-pages.log 2>&1 &
           server=$!
           sleep 1
-          for path in / src/main.js data/openings.txt data/pieces.json vendor/stockfish/stockfish-19-lite-single.wasm manifest.webmanifest sw.js; do
+          for path in "" src/main.js data/openings.txt data/pieces.json vendor/stockfish/stockfish-19-lite-single.wasm manifest.webmanifest sw.js; do
             curl --fail --silent --show-error "http://127.0.0.1:4173/$path" >/dev/null
           done
           kill "$server"
