@@ -32,12 +32,18 @@ jobs:
         with:
           gradle-version: '8.7'
       - name: Bundle official Stockfish 19 ARM64 engine
+        # Packaged as a native library so Android extracts it to nativeLibraryDir,
+        # the only app location that may be executed on Android 10+.
         run: |
           curl -L --fail --retry 3 -o /tmp/stockfish19.tar.gz \
             https://github.com/official-stockfish/Stockfish/releases/download/sf_19/stockfish-android-arm64-universal.tar.gz
+          mkdir -p app/src/main/jniLibs/arm64-v8a
           tar -xOf /tmp/stockfish19.tar.gz stockfish/stockfish-android-arm64-universal \
-            > app/src/main/assets/stockfish/stockfish
-          chmod 755 app/src/main/assets/stockfish/stockfish
+            > app/src/main/jniLibs/arm64-v8a/libstockfish.so
+          chmod 755 app/src/main/jniLibs/arm64-v8a/libstockfish.so
+          test -s app/src/main/jniLibs/arm64-v8a/libstockfish.so
+      - name: Kotlin core tests
+        run: gradle --no-daemon :core:test
       - name: Prepare stable signing key
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}

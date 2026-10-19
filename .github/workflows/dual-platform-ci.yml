@@ -11,13 +11,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate web bundle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Chess core, engine and personality tests (perft-verified)
+        run: npm test
+      - name: Smoke-test the static site
         run: |
-          test -s index.html
-          python3 -m http.server 4173 >/tmp/puzhe-pages.log 2>&1 &
+          node tools/serve.mjs >/tmp/puzhe-pages.log 2>&1 &
           server=$!
           sleep 1
-          curl --fail http://127.0.0.1:4173/index.html >/dev/null
+          for path in / src/main.js data/openings.txt data/pieces.json vendor/stockfish/stockfish-19-lite-single.wasm manifest.webmanifest sw.js; do
+            curl --fail --silent --show-error "http://127.0.0.1:4173/$path" >/dev/null
+          done
           kill "$server"
 
   android:
@@ -34,4 +40,7 @@ jobs:
       - uses: gradle/gradle-build-action@v3
         with:
           gradle-version: '8.7'
-      - run: gradle --no-daemon assembleRelease
+      - name: Kotlin core tests (same perft suite as the web)
+        run: gradle --no-daemon :core:test
+      - name: Build release APK
+        run: gradle --no-daemon assembleRelease
