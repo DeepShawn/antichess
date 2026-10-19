@@ -48,6 +48,7 @@ jobs:
           test -n "$apk"
           test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
           encoded=$(printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]')
+          case "$encoded" in ANDROID_KEYSTORE_BASE64=*) encoded="${encoded#*=}";; esac
           remainder=$((${#encoded} % 4))
           if [ "$remainder" -eq 2 ]; then encoded="${encoded}=="; elif [ "$remainder" -eq 3 ]; then encoded="${encoded}="; fi
           printf '%s' "$encoded" | base64 --decode --ignore-garbage > "$RUNNER_TEMP/puzhe-release.keystore"
