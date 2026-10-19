@@ -12,7 +12,7 @@
 
 ## Android 构建
 
-Android 工程只声明 `arm64-v8a` ABI。将官方 Stockfish 19 的 Android arm64-v8a 可执行文件放到 `app/src/main/assets/stockfish/stockfish`，应用首次启动时会复制到应用私有目录，并通过 UCI 本地进程运行。难度档位与等级分参考：入门 800、初级 1100、中级 1400、高级 1800、大师 2200、Stockfish 19 约 2850 Elo；实际强度会因设备、时限和开局阶段波动。
+Android 工程只声明 `arm64-v8a` ABI。Release 工作流会从官方 Stockfish 19 `sf_19` 发布包下载 Android ARM64 引擎并打包进 APK，应用首次启动时复制到应用私有目录，通过 UCI 本地进程运行。难度档位与等级分参考：入门 800、初级 1100、中级 1400、高级 1800、大师 2200、Stockfish 19 约 2850 Elo；实际强度会因设备、时限和开局阶段波动。
 
 网页和 Android 按同一版本同步维护。每次 `main` 更新都会运行双端 CI，发布标签会同时对应网页版本和 Android APK。
 

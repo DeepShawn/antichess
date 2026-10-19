@@ -27,6 +27,13 @@ jobs:
       - uses: gradle/gradle-build-action@v3
         with:
           gradle-version: '8.7'
+      - name: Bundle official Stockfish 19 ARM64 engine
+        run: |
+          curl -L --fail --retry 3 -o /tmp/stockfish19.tar.gz \
+            https://github.com/official-stockfish/Stockfish/releases/download/sf_19/stockfish-android-arm64-universal.tar.gz
+          tar -xOf /tmp/stockfish19.tar.gz stockfish/stockfish-android-arm64-universal \
+            > app/src/main/assets/stockfish/stockfish
+          chmod 755 app/src/main/assets/stockfish/stockfish
       - name: Build arm64 release APK
         run: gradle --no-daemon assembleRelease
       - name: Sign release APK
