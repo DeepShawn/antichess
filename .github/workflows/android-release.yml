@@ -32,19 +32,18 @@ jobs:
       - name: Sign release APK
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)
           test -n "$apk"
-          mkdir -p "$HOME/.android"
-          if [ ! -f "$HOME/.android/release.keystore" ]; then
-            keytool -genkeypair -v -keystore "$HOME/.android/release.keystore" \
-              -storepass android -keypass android -alias puzhe \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=PuZhe Chess, OU=Chess Lab, O=DeepShawn, C=CN"
-          fi
+          test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/puzhe-release.keystore"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
-            --ks "$HOME/.android/release.keystore" --ks-pass pass:android \
-            --key-pass pass:android "$apk"
+            --ks "$RUNNER_TEMP/puzhe-release.keystore" --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASSWORD" "$apk"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
       - name: Normalize APK name
         run: |
