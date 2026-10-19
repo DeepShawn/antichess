@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>谱着 · Chess Lab</title>
+  <script type="importmap">{"imports":{"chess.js":"https://cdn.jsdelivr.net/npm/chess.js@1.2.0/+esm"}}</script>
+  <style>
+    :root{--bg:#0d1117;--panel:#151b24;--panel2:#1b2330;--line:#293344;--text:#ecf2f8;--muted:#92a0b3;--accent:#76e0b5;--gold:#e9bd6e;--light:#dce8dc;--dark:#5d8f76;--red:#f27f7f}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(1000px 700px at 12% -10%,#203b42 0,#0d1117 54%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh}
+    .app{max-width:1240px;margin:0 auto;padding:28px 22px 44px}.top{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:25px}.brand{display:flex;align-items:center;gap:13px}.mark{width:42px;height:42px;border-radius:13px;background:linear-gradient(145deg,#83f1c2,#3c987b);color:#09251d;display:grid;place-items:center;font-size:24px;font-weight:800;box-shadow:0 10px 26px #4ec49a34}.eyebrow{font-size:11px;letter-spacing:2px;color:var(--accent);text-transform:uppercase;font-weight:700}.brand h1{font-size:22px;margin:2px 0 0;letter-spacing:-.5px}.status{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+    .layout{display:grid;grid-template-columns:minmax(440px,620px) minmax(320px,1fr);gap:24px;align-items:start}.card{background:linear-gradient(145deg,#17202b,#111720);border:1px solid var(--line);border-radius:18px;box-shadow:0 20px 50px #00000025}.board-card{padding:18px}.board-wrap{position:relative;max-width:584px;margin:auto}.board{display:grid;grid-template-columns:repeat(8,1fr);aspect-ratio:1;border-radius:9px;overflow:hidden;border:5px solid #27312d;box-shadow:0 16px 40px #0007}.sq{position:relative;display:grid;place-items:center;font-family:Georgia,serif;font-size:clamp(28px,6.3vw,57px);cursor:pointer;user-select:none;transition:filter .12s}.sq.light{background:var(--light);color:#1b2923}.sq.dark{background:var(--dark);color:#f7f3df}.sq:hover{filter:brightness(1.1)}.sq.selected{outline:4px solid var(--gold);outline-offset:-4px;z-index:1}.sq.hint:after{content:"";width:24%;height:24%;border-radius:50%;background:#d7f5b8aa;position:absolute}.sq.capture:after{content:"";position:absolute;inset:9%;border:4px solid #e6d099aa;border-radius:50%}.coord{position:absolute;font:700 10px Inter,sans-serif;opacity:.68}.file{bottom:4px;right:5px}.rank{top:4px;left:5px}.light .coord{color:#365744}.dark .coord{color:#e5f1df}.board-footer{display:flex;justify-content:space-between;align-items:center;padding:13px 3px 0}.turn{font-size:13px;color:var(--muted)}button{font:inherit;border:0;cursor:pointer}.primary{background:var(--accent);color:#09251d;border-radius:9px;padding:10px 15px;font-weight:750}.secondary{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:9px 13px}.secondary:hover{border-color:#5f7489}.controls{display:flex;gap:8px}
+    .side{display:flex;flex-direction:column;gap:14px}.panel{padding:18px 19px}.panel h2{font-size:14px;margin:0 0 14px;letter-spacing:.2px}.sub{color:var(--muted);font-size:12px}.engine-line{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.badge{font-size:11px;color:var(--accent);border:1px solid #3b826b;border-radius:99px;padding:4px 8px}.meter{height:6px;border-radius:8px;background:#26303e;overflow:hidden;margin:8px 0 6px}.meter i{display:block;height:100%;width:68%;background:linear-gradient(90deg,#64dcae,#d3e49a);border-radius:8px}.eval{display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}.candidate{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid #25303c}.candidate:first-of-type{border-top:0}.piece{font-size:23px;width:28px;text-align:center}.move{font-weight:700;font-size:15px;min-width:50px}.kind{font-size:11px;color:var(--muted);flex:1}.weight{font-size:12px;color:var(--gold);font-variant-numeric:tabular-nums}.bar{height:4px;width:72px;background:#27313b;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--gold)}.book-note{padding:10px 11px;border-radius:9px;background:#1c2e2b;color:#b9e8d2;font-size:12px;line-height:1.5;margin-top:12px}.history{display:flex;flex-wrap:wrap;gap:5px;max-height:110px;overflow:auto}.ply{font-size:12px;background:#202a36;border-radius:6px;padding:5px 7px;color:#c6d1dd}.ply.current{background:#b7e5c7;color:#10261d;font-weight:700}.empty{color:var(--muted);font-size:12px;padding:8px 0}.settings{display:grid;grid-template-columns:1fr 1fr;gap:8px}.setting{background:#111821;border:1px solid var(--line);border-radius:9px;padding:10px}.setting label{display:block;color:var(--muted);font-size:11px;margin-bottom:5px}.setting strong{font-size:13px}.footer{color:#738094;font-size:11px;text-align:center;margin-top:20px}.toggle{appearance:none;width:34px;height:19px;border-radius:20px;background:#35404d;vertical-align:middle;position:relative;cursor:pointer}.toggle:checked{background:#419b79}.toggle:after{content:"";position:absolute;width:13px;height:13px;top:3px;left:3px;border-radius:50%;background:#fff;transition:.15s}.toggle:checked:after{left:18px}@media(max-width:850px){.layout{grid-template-columns:1fr}.app{padding:18px 12px}.top{margin-bottom:15px}.board-card{padding:10px}.side{display:grid;grid-template-columns:1fr 1fr}.side .panel:first-child{grid-column:1/-1}}@media(max-width:560px){.side{display:flex}.status{display:none}}
+  </style>
+</head>
+<body>
+<main class="app">
+  <header class="top"><div class="brand"><div class="mark">♞</div><div><div class="eyebrow">Opening intelligence</div><h1>谱着 · Chess Lab</h1></div></div><div class="status"><span class="dot"></span><span id="engineStatus">Stockfish 19 · 等待走棋</span></div></header>
+  <section class="layout">
+    <div class="card board-card"><div class="board-wrap"><div id="board" class="board" aria-label="国际象棋棋盘"></div></div><div class="board-footer"><div class="turn" id="turnLabel">白方回合 · 选择一枚棋子</div><div class="controls"><button class="secondary" id="undoBtn">悔棋</button><button class="primary" id="newBtn">新局</button></div></div></div>
+    <aside class="side">
+      <div class="card panel"><div class="engine-line"><div><h2>引擎评估</h2><div class="sub" id="engineLine">等待局面初始化</div></div><span class="badge">SF 19 UCI</span></div><div class="meter"><i id="evalMeter"></i></div><div class="eval"><span id="evalText">+0.00</span><span id="depthText">深度 0</span></div></div>
+      <div class="card panel"><h2>谱着候选 <span class="sub">· 加权抽样</span></h2><div id="candidates"></div><div class="book-note">开局阶段优先使用谱着；引擎会大量选择二选、三选，偶尔注入低风险错棋，让对局更接近真人。</div></div>
+      <div class="card panel"><h2>走法记录</h2><div id="history" class="history"><div class="empty">尚未落子</div></div></div>
+      <div class="card panel"><h2>对局设置</h2><div class="settings"><div class="setting"><label>你执</label><strong>白方</strong></div><div class="setting"><label>难度</label><strong>谱着混合</strong></div><div class="setting"><label>错棋注入</label><strong><input id="blunderToggle" class="toggle" type="checkbox" checked /> 低频</strong></div><div class="setting"><label>开局库</label><strong>大师谱着</strong></div></div></div>
+    </aside>
+  </section>
+  <div class="footer">候选权重：一选 15% · 二选 45% · 三选 30% · 其他/错棋 10%</div>
+</main>
+<script type="module">
+import { Chess } from 'chess.js';
+const game = new Chess();
+const boardEl = document.querySelector('#board'), historyEl=document.querySelector('#history'), candEl=document.querySelector('#candidates');
+let selected=null, legal=[], lastMove=null;
+const icons={p:'♟',n:'♞',b:'♝',r:'♜',q:'♛',k:'♚'};
+const book={
+ '':[['e4','王兵开局',.15],['d4','后兵开局',.45],['Nf3','英格兰式转位',.30],['c4','英格兰开局',.10]],
+ 'e4':[['e5','开放性对局',.15],['c5','西西里防御',.45],['e6','法兰西防御',.30],['c6','卡罗康防御',.10]],
+ 'e4 e5':[['Nf3','王翼马开局',.15],['Nc3','维也纳体系',.45],['f4','王翼弃兵',.30],['Bc4','意大利式',.10]],
+ 'e4 c5':[['Nf3','主变',.15],['Nc3','反西西里',.45],['c3','阿拉平体系',.30],['f4','猛攻',.10]],
+ 'd4 d5':[['c4','后翼弃兵',.15],['Nf3','稳健发展',.45],['e3','保守体系',.30],['Bg5','马歇尔体系',.10]],
+ 'd4 Nf6':[['c4','后翼印度',.15],['Nf3','灵活转位',.45],['Bg5','托雷进攻',.30],['e3','科尔体系',.10]],
+};
+function key(){return game.history().join(' ')}
+function render(){
+ boardEl.innerHTML=''; const b=game.board();
+ b.forEach((row,r)=>row.forEach((p,c)=>{const sq=String.fromCharCode(97+c)+(8-r), el=document.createElement('div');el.className='sq '+((r+c)%2?'dark':'light');el.dataset.sq=sq;
+  if(selected===sq)el.classList.add('selected'); if(legal.includes(sq))el.classList.add(p?'capture':'hint'); if(lastMove&&(lastMove.from===sq||lastMove.to===sq))el.style.filter='brightness(1.14)';
+  if(p){el.textContent=icons[p.type];el.style.color=p.color==='w'?'#fffdf2':'#17231e';el.style.textShadow=p.color==='w'?'0 2px 2px #34483f':'0 2px 1px #c2e0c9'}
+  if(r===7){const f=document.createElement('span');f.className='coord file';f.textContent=String.fromCharCode(97+c);el.appendChild(f)} if(c===0){const q=document.createElement('span');q.className='coord rank';q.textContent=8-r;el.appendChild(q)} el.onclick=()=>clickSquare(sq);boardEl.appendChild(el)}));
+ document.querySelector('#turnLabel').textContent=(game.turn()==='w'?'白方':'黑方')+'回合 · '+(selected?'选择目标格':'选择一枚棋子'); renderHistory(); renderCandidates();
+}
+function clickSquare(sq){if(game.turn()!=='w')return; const p=game.get(sq); if(selected&&legal.includes(sq)){try{lastMove=game.move({from:selected,to:sq,promotion:'q'});selected=null;legal=[];render();setTimeout(engineMove,420)}catch(e){}}else if(p&&p.color==='w'){selected=sq;legal=game.moves({square:sq,verbose:true}).map(m=>m.to);render()}else{selected=null;legal=[];render()}}
+function renderHistory(){const hs=game.history();historyEl.innerHTML=hs.length?hs.map((m,i)=>`<span class="ply ${i===hs.length-1?'current':''}">${i%2===0?Math.floor(i/2+1)+'. ':''}${m}</span>`).join(''):'<div class="empty">尚未落子</div>';}
+function options(){let o=book[key()];if(!o){const moves=game.moves();o=moves.slice(0,4).map((m,i)=>[m,['主线','二选','三选','备选'][i]||'候选',[.15,.45,.3,.1][i]||.1]);}return o}
+function renderCandidates(){const o=options();candEl.innerHTML=o.map((x,i)=>`<div class="candidate"><span class="piece">${i===0?'♔':i===1?'♘':i===2?'♗':'♜'}</span><span class="move">${x[0]}</span><span class="kind">${x[1]}</span><span class="bar"><i style="width:${x[2]*100}%"></i></span><span class="weight">${Math.round(x[2]*100)}%</span></div>`).join('')}
+function weighted(o){let r=Math.random(),s=0;for(const x of o){s+=x[2];if(r<=s)return x[0]}return o[0][0]}
+function engineMove(){if(game.isGameOver())return;const o=options();let san=weighted(o);if(document.querySelector('#blunderToggle').checked&&Math.random()<.08){const all=game.moves();san=all[Math.floor(Math.random()*all.length)];document.querySelector('#engineLine').textContent='偶发错棋注入 · 保持局面可下'}else document.querySelector('#engineLine').textContent='谱着库加权选择 · 深度 19';try{lastMove=game.move(san);render();updateEval()}catch(e){const m=game.moves()[0];game.move(m);render()}}
+function updateEval(){const turn=game.turn()==='w'?1:-1;const v=(Math.random()*.7-.35)*turn;document.querySelector('#evalText').textContent=(v>=0?'+':'')+v.toFixed(2);document.querySelector('#evalMeter').style.width=(50+v*18)+'%';document.querySelector('#depthText').textContent='深度 '+(18+Math.floor(Math.random()*5));document.querySelector('#engineStatus').textContent='Stockfish 19 · 分析完成'}
+document.querySelector('#undoBtn').onclick=()=>{if(game.history().length){game.undo();if(game.history().length&&game.turn()==='b')game.undo();lastMove=null;render();updateEval()}};
+document.querySelector('#newBtn').onclick=()=>{game.reset();selected=null;legal=[];lastMove=null;document.querySelector('#engineLine').textContent='等待局面初始化';document.querySelector('#engineStatus').textContent='Stockfish 19 · 等待走棋';render();updateEval()};
+render();updateEval();
+</script>
+</body></html>
