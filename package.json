@@ -1,0 +1,10 @@
+{
+  "name": "puzhe-chess-lab",
+  "private": true,
+  "type": "module",
+  "description": "谱着 Chess Lab — web app and shared chess core",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "serve": "node tools/serve.mjs"
+  }
+}
