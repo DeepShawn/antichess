@@ -34,18 +34,13 @@ jobs:
           tar -xOf /tmp/stockfish19.tar.gz stockfish/stockfish-android-arm64-universal \
             > app/src/main/assets/stockfish/stockfish
           chmod 755 app/src/main/assets/stockfish/stockfish
-      - name: Build arm64 release APK
-        run: gradle --no-daemon assembleRelease
-      - name: Sign release APK
+      - name: Prepare stable signing key
         env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)
-          test -n "$apk"
           test -n "$KEYSTORE_B64" && test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
           encoded=$(printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]')
           case "$encoded" in ANDROID_KEYSTORE_BASE64=*) encoded="${encoded#*=}";; esac
@@ -53,10 +48,12 @@ jobs:
           if [ "$remainder" -eq 2 ]; then encoded="${encoded}=="; elif [ "$remainder" -eq 3 ]; then encoded="${encoded}="; fi
           printf '%s' "$encoded" | base64 --decode --ignore-garbage > "$RUNNER_TEMP/puzhe-release.keystore"
           keytool -list -keystore "$RUNNER_TEMP/puzhe-release.keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
-            --force \
-            --ks "$RUNNER_TEMP/puzhe-release.keystore" --ks-pass "pass:$KEYSTORE_PASSWORD" \
-            --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASSWORD" "$apk"
+          echo "RELEASE_KEYSTORE_PATH=$RUNNER_TEMP/puzhe-release.keystore" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+      - name: Build arm64 release APK
+        run: gradle --no-daemon assembleRelease
       - name: Normalize APK name
         run: |
           apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)
