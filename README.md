@@ -18,4 +18,8 @@ Android 工程只声明 `arm64-v8a` ABI。将官方 Stockfish 19 的 Android arm
 
 `.github/workflows/pages.yml` 会在 `main` 更新时发布仓库根目录的网页版本。首次使用时，在仓库 Settings → Pages → Source 选择 GitHub Actions。
 
+## Android Release
+
+推送 `v*` 标签会触发 `.github/workflows/android-release.yml`，在 GitHub runner 上构建并发布 `arm64-v8a` APK，同时上传 SHA-256 校验文件。当前版本为 `1.1.0`。
+
 页面使用 `chess.js` CDN 生成合法走法。若需要接入本地 Stockfish 19 WASM，可将 UCI worker 放入 `stockfish/` 并在页面中替换引擎适配器。
