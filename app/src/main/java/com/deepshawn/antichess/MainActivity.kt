@@ -91,6 +91,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        installCrashRecorder()
         pieces = PieceSet(assets.open("pieces.json").bufferedReader().readText())
         ctl = GameController(this, scope)
         ctl.onChange = { render() }
@@ -99,6 +100,31 @@ class MainActivity : Activity() {
         ctl.start()
         whiteBottom = ctl.mode == Mode.ANALYSIS || ctl.playerWhite
         render()
+        showLastCrash()
+    }
+
+    // ───────────── crash reporting ─────────────
+    // Without logcat access, a crash is written to app storage and shown on the next launch.
+    private val crashFile get() = java.io.File(filesDir, "last-crash.txt")
+
+    private fun installCrashRecorder() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            runCatching {
+                crashFile.writeText("谱着 Chess Lab ${packageManager.getPackageInfo(packageName, 0).versionName} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}\nthread: ${thread.name}\n\n${error.stackTraceToString()}")
+            }
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
+    private fun showLastCrash() {
+        val report = runCatching { crashFile.takeIf { it.exists() }?.readText() }.getOrNull() ?: return
+        crashFile.delete()
+        sheet("上次异常退出") { dialog ->
+            addView(label("应用上次意外关闭。复制下面的信息发给开发者，可以帮助定位问题。", 13f, pal.muted), lp(-1, -2) { bottomMargin = dp(10) })
+            addView(label(report.take(4000), 10.5f, pal.text).apply { typeface = Typeface.MONOSPACE; setTextIsSelectable(true); setPadding(dp(10), dp(10), dp(10), dp(10)); background = rounded(pal.panel2, dpf(10)) }, lp(-1, -2))
+            addView(button("复制错误信息", primary = true) { clipboard().setPrimaryClip(ClipData.newPlainText("crash", report)); toast("已复制"); dialog.dismiss() }, lp(-1, -2) { topMargin = dp(12) })
+        }
     }
 
     override fun onPause() { ctl.persist(); super.onPause() }
@@ -178,7 +204,7 @@ class MainActivity : Activity() {
         val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(11), 0, 0, 0) }
         titles.addView(label("OPENING INTELLIGENCE", 9f, pal.accent, true).apply { letterSpacing = 0.2f })
         titles.addView(TextView(this).apply {
-            text = SpannableStringBuilder("谱着 Chess Lab").apply { setSpan(ForegroundColorSpan(pal.muted), 3, 13, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
+            text = SpannableStringBuilder("谱着 Chess Lab").apply { setSpan(ForegroundColorSpan(pal.muted), 3, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
             textSize = 19f; setTextColor(pal.text); typeface = Typeface.DEFAULT_BOLD
         })
         top.addView(titles, lp(0, -2, 1f))

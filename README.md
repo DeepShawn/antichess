@@ -45,7 +45,7 @@ ES 模块需要通过 HTTP 访问，直接双击 `index.html` 无法运行，请
 - 仅打包 `arm64-v8a`。Release 工作流从官方 `sf_19` 发布包下载 Stockfish 19 Android ARM64，放到 `app/src/main/jniLibs/arm64-v8a/libstockfish.so`。
   Android 10+ 禁止执行应用私有目录中的二进制，只有安装时解压到 `nativeLibraryDir` 的原生库可以执行——这修复了旧版本引擎无法启动的问题。详见 `docs/STOCKFISH.md`。
 - 没有 Stockfish 时（例如本地调试构建）自动使用 Kotlin 内置引擎。
-- 发布签名见 `docs/RELEASE_SIGNING.md`。推送 `v*` 标签会构建并发布签名 APK 与 SHA-256 校验文件。当前版本 `2.0.0`。
+- 发布签名见 `docs/RELEASE_SIGNING.md`。推送 `v*` 标签会构建并发布签名 APK 与 SHA-256 校验文件。当前版本 `2.0.1`。
 
 ## CI / 发布
 

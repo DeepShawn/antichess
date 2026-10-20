@@ -20,9 +20,11 @@ import com.deepshawn.antichess.engine.AnalysisSnapshot
 import com.deepshawn.antichess.engine.ChessEngine
 import com.deepshawn.antichess.engine.Engines
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -87,7 +89,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     fun start() {
         restore()
         scope.launch {
-            book = runCatching { OpeningBook.parse(appContext.assets.open("openings.txt").bufferedReader().readText()) }.getOrNull()
+            book = withContext(Dispatchers.Default) { runCatching { OpeningBook.parse(appContext.assets.open("openings.txt").bufferedReader().readText()) }.getOrNull() }
             engine = Engines.create(appContext, preferStockfish)
             onChange()
             schedule()
