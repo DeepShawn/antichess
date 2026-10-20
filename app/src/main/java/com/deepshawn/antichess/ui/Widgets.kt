@@ -200,6 +200,7 @@ class Sounds {
     var enabled = true
     private val rate = 22050
     private val clips = HashMap<String, ShortArray>()
+    private val rng = Random(7) // must be initialised before init {} renders the clips
 
     init {
         clips["move"] = render(0.09) { t, i -> tone(t, 520.0, 0.09, 0.32) + noise(i, t, 0.04, 0.18) }
@@ -208,7 +209,6 @@ class Sounds {
         clips["end"] = render(0.95) { t, _ -> tone(t, 523.0, 0.9, 0.16) + tone(t - 0.07, 659.0, 0.9, 0.14) + tone(t - 0.14, 784.0, 0.9, 0.12) }
     }
 
-    private val rng = Random(7)
     private fun noise(@Suppress("UNUSED_PARAMETER") i: Int, t: Double, dur: Double, gain: Double) = if (t in 0.0..dur) (rng.nextDouble() * 2 - 1) * gain * (1 - t / dur).let { it * it * it } else 0.0
     private fun tone(t: Double, f: Double, dur: Double, gain: Double, square: Boolean = false): Double {
         if (t < 0 || t > dur) return 0.0

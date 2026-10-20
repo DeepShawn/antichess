@@ -6,7 +6,7 @@ android {
     defaultConfig {
         applicationId = "com.deepshawn.antichess"
         minSdk = 26; targetSdk = 35
-        versionCode = 4; versionName = "2.0.0"
+        versionCode = 5; versionName = "2.0.1"
         ndk { abiFilters += "arm64-v8a" }
     }
     val releaseKeyPath = System.getenv("RELEASE_KEYSTORE_PATH")
