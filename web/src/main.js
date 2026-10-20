@@ -2,7 +2,7 @@
 import { Game, START_FEN } from './core/chess.js';
 import { OpeningBook } from './core/book.js';
 import { EngineClient } from './engine/client.js';
-import { LEVELS, PREFERENCES, RANK_NAMES, choose, scoreToCp } from './engine/personality.js';
+import { LEVELS, PREFERENCES, RANK_NAMES, SAC_LABELS, choose, scoreToCp, sacrificedMaterial } from './engine/personality.js';
 import { grade, accuracySummary, GRADES } from './engine/review.js';
 import { Board } from './ui/board.js';
 import { loadPieces, pieceSvg } from './ui/pieces.js';
@@ -136,7 +136,7 @@ async function engineTurn(token) {
   const sf = engine.kind === 'stockfish';
   const bookMoves = lv.id === 'max' ? [] : book?.candidates(fen) ?? [];
   const res = await engine.analyze({
-    fen: state.game.startFen, moves: state.game.uciMoves(), multipv: lv.multipv,
+    fen: state.game.startFen, moves: state.game.uciMoves(), multipv: PREFERENCES[settings.preference].sacrifice ? Math.max(lv.multipv, 5) : lv.multipv, // wider search finds sacrifices
     depth: lv.depth, movetime: sf ? Math.round(lv.movetime * 1.6) : lv.movetime,
   }, info => {
     if (token !== state.token) return;
@@ -145,15 +145,17 @@ async function engineTurn(token) {
   if (token !== state.token || res.cancelled && !res.lines.length) return;
   if (res.lines[0]) setEval(ply, res.lines[0], res.depth);
   const legal = state.game.moves().map(m => m.uci);
-  const decision = choose({ book: bookMoves, lines: res.lines, legal, level: lv, preference: PREFERENCES[settings.preference], blunders: settings.blunders });
+  const decision = choose({ fen, book: bookMoves, lines: res.lines, legal, level: lv, preference: PREFERENCES[settings.preference], blunders: settings.blunders });
   const candidates = decision.source === 'book'
     ? bookMoves.map((b, i) => ({ uci: b.uci, san: b.san, label: b.name, prob: decision.probs[i] }))
-    : res.lines.map((l, i) => ({ uci: l.pv[0], san: uciToSan(fen, l.pv[0]), score: whiteScore(l, turnAt(ply)), prob: decision.probs[i] }));
+    : res.lines.map((l, i) => ({ uci: l.pv[0], san: uciToSan(fen, l.pv[0]), score: whiteScore(l, turnAt(ply)), prob: decision.probs[i], sac: decision.sacs?.[i] || null }));
   if (decision.source === 'blunder' && !candidates.some(c => c.uci === decision.uci)) candidates.push({ uci: decision.uci, san: uciToSan(fen, decision.uci), prob: 0, slip: true });
   const wait = 380 + Math.random() * 380 - (performance.now() - started);
   if (wait > 0) await sleep(wait);
   if (token !== state.token) return;
-  state.choices[ply + 1] = { source: decision.source, rank: decision.rank, uci: decision.uci, candidates, depth: res.depth, engine: engine.name };
+  const sacLine = decision.sacrifice && res.lines[decision.rank];
+  state.choices[ply + 1] = { source: decision.source, rank: decision.rank, uci: decision.uci, candidates, depth: res.depth, engine: engine.name,
+    sacrifice: decision.sacrifice || null, sacAmount: sacLine ? sacrificedMaterial(fen, sacLine.pv) : 0 };
   state.thinking = false;
   const rec = state.game.move(decision.uci);
   if (rec) afterMove(rec);
@@ -391,12 +393,13 @@ function renderEngine() {
     return;
   }
   if (choice) {
-    $('#engineTitle').textContent = choice.source === 'book' ? '谱着库选择' : choice.source === 'blunder' ? '错棋注入' : '谱着候选';
-    list.innerHTML = choice.candidates.map((c, i) => candRow({ rank: c.slip ? -1 : i, san: c.san, score: c.score, label: c.label, prob: c.prob, chosen: c.uci === choice.uci, slip: c.slip })).join('');
+    $('#engineTitle').textContent = choice.sacrifice ? `弃子${SAC_LABELS[choice.sacrifice].name}！` : choice.source === 'book' ? '谱着库选择' : choice.source === 'blunder' ? '错棋注入' : '谱着候选';
+    list.innerHTML = choice.candidates.map((c, i) => candRow({ rank: c.slip ? -1 : i, san: c.san, score: c.score, label: c.label, prob: c.prob, chosen: c.uci === choice.uci, slip: c.slip, sac: c.sac })).join('');
     const rank = choice.rank >= 0 ? RANK_NAMES[choice.rank] : '非候选';
     note.innerHTML = choice.source === 'book' ? `${icon('sparkle')}<span>开局阶段：从大师谱着中按权重抽中<b>${rank}</b></span>`
       : choice.source === 'blunder' ? `${icon('flag')}<span>低频错棋注入：这一步故意偏离引擎，给你反击机会</span>`
-        : `${icon('sparkle')}<span>引擎深度 ${choice.depth} 评估后，按偏好抽中<b>${rank}</b></span>`;
+        : choice.sacrifice ? `${icon('sparkle')}<span>${choice.sacrifice === 'brilliant' ? '妙棋 !!' : '好棋 !'}：弃掉价值 <b>${choice.sacAmount}</b> 兵的子力换取攻势，引擎深度 ${choice.depth} 仍认可这步</span>`
+          : `${icon('sparkle')}<span>引擎深度 ${choice.depth} 评估后，按偏好抽中<b>${rank}</b></span>`;
     return;
   }
   if (state.mode === 'analysis' || (!atEnd() && state.evals[state.view])) {
@@ -421,11 +424,11 @@ function lastEnginePly() {
 
 const skeleton = () => '<div class="cand skeleton"></div><div class="cand skeleton"></div><div class="cand skeleton"></div>';
 
-function candRow({ rank, san, score, label, prob, chosen, pv, slip }) {
+function candRow({ rank, san, score, label, prob, chosen, pv, slip, sac }) {
   const rname = slip ? '错棋' : RANK_NAMES[rank] ?? '候选';
   return `<div class="cand ${chosen ? 'chosen' : ''} ${slip ? 'slip' : ''}">
     <span class="rank r${rank}">${rname}</span>
-    <span class="san">${esc(san)}</span>
+    <span class="san">${esc(san)}${sac ? `<b class="sac ${sac}" title="弃子${SAC_LABELS[sac].name}">${SAC_LABELS[sac].mark}</b>` : ''}</span>
     <span class="cinfo">${label ? `<span class="clabel">${esc(label)}</span>` : ''}${pv ? `<span class="pv">${esc(pv)}</span>` : ''}</span>
     ${score ? `<span class="score ${scoreToCp(score) >= 0 ? 'pos' : 'neg'}">${fmtScore(score)}</span>` : '<span></span>'}
     ${prob !== undefined ? `<span class="prob"><i style="width:${(prob * 100).toFixed(1)}%"></i></span><span class="pct">${Math.round(prob * 100)}%</span>` : '<span></span><span></span>'}
@@ -453,7 +456,7 @@ function moveCell(c) {
   if (!c) return '<span class="mv blank"></span>';
   if (!c.rec) return '<span class="mv blank">…</span>';
   const note = state.notes[c.ply], choice = state.choices[c.ply], g = note && GRADES[note.grade];
-  const badge = choice ? (choice.source === 'book' ? '<i class="tag book" title="谱着库">谱</i>' : choice.source === 'blunder' ? '<i class="tag slip" title="错棋注入">误</i>' : choice.rank > 0 ? `<i class="tag rank" title="${RANK_NAMES[choice.rank]}">${choice.rank + 1}</i>` : '') : '';
+  const badge = choice ? (choice.sacrifice ? `<i class="tag sac-${choice.sacrifice}" title="弃子${SAC_LABELS[choice.sacrifice].name}">${SAC_LABELS[choice.sacrifice].mark}</i>` : choice.source === 'book' ? '<i class="tag book" title="谱着库">谱</i>' : choice.source === 'blunder' ? '<i class="tag slip" title="错棋注入">误</i>' : choice.rank > 0 ? `<i class="tag rank" title="${RANK_NAMES[choice.rank]}">${choice.rank + 1}</i>` : '') : '';
   return `<button class="mv ${state.view === c.ply ? 'current' : ''} ${g ? 'g-' + note.grade : ''}" data-ply="${c.ply}">${esc(c.rec.san)}${g?.mark ? `<b class="glyph">${g.mark}</b>` : ''}${badge}</button>`;
 }
 

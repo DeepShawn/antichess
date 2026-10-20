@@ -114,4 +114,27 @@ class CoreTest {
         assertEquals(Grade.BLUNDER, Review.grade(Score(30), Score(-500), true).grade)
         assertEquals(Grade.BEST, Review.grade(Score(30), Score(-500), false).grade)
     }
+
+    private val fried = "r1bqkb1r/ppp2ppp/2n5/3np1N1/2B5/8/PPPP1PPP/RNBQK2R w KQkq - 0 6"
+
+    @Test fun sacrificeDetectionMatchesWeb() {
+        assertEquals(2, Sacrifice.material(fried, listOf("g5f7", "e8f7", "d1f3", "f7e6")))
+        assertEquals(0, Sacrifice.material(fried, listOf("c4d5", "d8d5")))
+        assertEquals(1, Sacrifice.material(fried, listOf("d2d4", "e5d4")))
+        assertEquals(0, Sacrifice.material(fried, listOf("g5f7")))
+        assertEquals(0, Sacrifice.material(fried, listOf("g5f7", "e8f7", "c4d5", "c8e6")))
+        assertEquals(0, Sacrifice.material(fried, listOf("h2h3", "d5f4", "d2d3", "f4g2")))
+        val lines = listOf(
+            EngineLine(Score(40), listOf("g5f7", "e8f7", "d1f3", "f7e6")), EngineLine(Score(35), listOf("d2d4", "e5d4", "e1g1", "c8e6")),
+            EngineLine(Score(30), listOf("b1c3", "d5c3", "d2c3", "f8e7")), EngineLine(Score(-400), listOf("c4d5", "d8d5", "g5f7", "d5f7")),
+        )
+        assertEquals(listOf(Sac.BRILLIANT, Sac.GOOD, null, null), Sacrifice.classify(fried, lines, LEVELS[2]))
+        val style = PREFERENCES.first { it.id == "sacrifice" }
+        val plain = Personality.engineDistribution(lines, LEVELS[2], style)
+        val c = Personality.choose(emptyList(), lines, emptyList(), LEVELS[2], style, blunders = false, fen = fried)
+        assertTrue(c.probs[0] > 0.7 && c.probs[0] > plain[0] * 1.4)
+        assertEquals(0.0, c.probs[3]); assertEquals(1.0, c.probs.sum(), 1e-9)
+        val smothered = Position("r6k/6pp/7N/8/8/1Q6/6PP/6K1 w - - 0 1")
+        assertEquals(9, Sacrifice.material(smothered.fen(), listOf("b3g8", "a8g8", "h6f7")))
+    }
 }

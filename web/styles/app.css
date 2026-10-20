@@ -239,6 +239,8 @@ body.browsing .turn-line { color: var(--gold); }
 .tag { font-style: normal; font-size: 9.5px; font-weight: 800; padding: 1px 4px; border-radius: 5px; margin-left: auto; }
 .tag.book { background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--gold); }
 .tag.rank { background: color-mix(in srgb, var(--accent-2) 22%, transparent); color: var(--accent-2); }
+.sac { margin-left: 3px; font-size: 13px; } .sac.brilliant { color: #26c6da; } .sac.good { color: #7cc0ff; }
+.tag.sac-brilliant { background: rgba(38, 198, 218, .2); color: #26c6da; } .tag.sac-good { background: rgba(124, 192, 255, .2); color: #7cc0ff; }
 .tag.slip { background: color-mix(in srgb, var(--bad) 22%, transparent); color: var(--bad); }
 .foot { text-align: center; color: var(--faint); font-size: 11px; padding: 6px 16px 26px; }
 

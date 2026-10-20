@@ -74,3 +74,38 @@ test('review grades and accuracy', () => {
   const s = accuracySummary([{ mover: 'w', accuracy: 90, grade: 'good' }, { mover: 'w', accuracy: 70, grade: 'mistake' }]);
   assert.ok(s.w > 70 && s.w < 90 && s.b === null && s.wCounts.mistake === 1);
 });
+
+import { sacrificedMaterial, classifySacrifices } from '../web/src/engine/personality.js';
+
+// Two Knights, before the Fried Liver sacrifice 6.Nxf7.
+const FRIED = 'r1bqkb1r/ppp2ppp/2n5/3np1N1/2B5/8/PPPP1PPP/RNBQK2R w KQkq - 0 6';
+
+test('sacrifice detection follows the engine line', () => {
+  assert.equal(sacrificedMaterial(FRIED, ['g5f7', 'e8f7', 'd1f3', 'f7e6']), 2, 'knight for a pawn');
+  assert.equal(sacrificedMaterial(FRIED, ['c4d5', 'd8d5']), 0, 'a fair trade is not a sacrifice');
+  assert.equal(sacrificedMaterial(FRIED, ['d2d4', 'e5d4']), 1, 'pawn gambit');
+  assert.equal(sacrificedMaterial(FRIED, ['g5f7']), 0, 'needs the reply to judge');
+  assert.equal(sacrificedMaterial(FRIED, ['h2h3', 'd5f4', 'd2d3', 'f4g2']), 0, 'material lost later in the line is not a sacrifice');
+  assert.equal(sacrificedMaterial(FRIED, ['g5f7', 'e8f7', 'c4d5', 'c8e6']), 0, 'material won back at once is not a sacrifice');
+});
+
+test('sacrifice preference boosts sound sacrifices only', () => {
+  const lines = [
+    { cp: 40, pv: ['g5f7', 'e8f7', 'd1f3', 'f7e6'] },   // brilliant: piece sac, best move
+    { cp: 35, pv: ['d2d4', 'e5d4', 'e1g1', 'c8e6'] },   // good: pawn gambit
+    { cp: 30, pv: ['b1c3', 'd5c3', 'd2c3', 'f8e7'] },   // normal trade
+    { cp: -400, pv: ['c4d5', 'd8d5', 'g5f7', 'd5f7'] }, // unsound
+  ];
+  assert.deepEqual(classifySacrifices(FRIED, lines, LEVELS[2]), ['brilliant', 'good', null, null]);
+  const plain = engineDistribution(lines, LEVELS[2], PREFERENCES.sacrifice);
+  const r = choose({ fen: FRIED, lines, legal: [], level: LEVELS[2], preference: PREFERENCES.sacrifice, blunders: false, rng: () => 0.5 });
+  assert.ok(r.probs[0] > 0.7 && r.probs[0] > plain[0] * 1.4, 'brilliant sacrifice becomes much more likely');
+  assert.ok(r.probs[1] / r.probs[2] > 3 * plain[1] / plain[2], 'good sacrifice is preferred over the quiet move');
+  assert.ok(r.probs[2] < plain[2], 'quiet moves give way');
+  assert.equal(r.probs[3], 0, 'unsound sacrifice never chosen');
+  assert.ok(Math.abs(r.probs.reduce((a, b) => a + b) - 1) < 1e-9);
+  const quiet = [{ cp: 20, pv: ['b1c3', 'd5c3', 'd2c3'] }, { cp: 10, pv: ['e1g1', 'f8e7'] }];
+  const q = choose({ fen: FRIED, lines: quiet, legal: [], level: LEVELS[2], preference: PREFERENCES.sacrifice, blunders: false, rng: () => 0.1 });
+  assert.equal(q.sacrifice, null, 'no sacrifice available → plays normally');
+  assert.deepEqual(q.probs, engineDistribution(quiet, LEVELS[2], PREFERENCES.sacrifice));
+});

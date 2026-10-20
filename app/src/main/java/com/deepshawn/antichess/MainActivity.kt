@@ -34,6 +34,7 @@ import com.deepshawn.antichess.core.LEVELS
 import com.deepshawn.antichess.core.PREFERENCES
 import com.deepshawn.antichess.core.Personality
 import com.deepshawn.antichess.core.RANK_NAMES
+import com.deepshawn.antichess.core.Sac
 import com.deepshawn.antichess.core.START_FEN
 import com.deepshawn.antichess.core.Score
 import com.deepshawn.antichess.ui.Arrow
@@ -433,7 +434,7 @@ class MainActivity : Activity() {
         openingBook.background = rounded(Color.TRANSPARENT, dpf(99), if (inBook) withAlpha(pal.gold, 0.5f) else pal.line, dp(1))
     }
 
-    private fun candidateRow(rank: Int, san: String, score: Score?, info: String?, prob: Double?, chosen: Boolean, slip: Boolean): View {
+    private fun candidateRow(rank: Int, san: String, score: Score?, info: String?, prob: Double?, chosen: Boolean, slip: Boolean, sac: Sac? = null): View {
         val row = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10), dp(9), dp(10), dp(9))
             background = when {
@@ -444,7 +445,11 @@ class MainActivity : Activity() {
         }
         val rankColor = when (rank) { 0 -> pal.accent; 1 -> pal.accent2; 2 -> pal.gold; -1 -> pal.bad; else -> pal.muted }
         row.addView(label(if (slip) "错棋" else RANK_NAMES.getOrElse(rank) { "候选" }, 11f, rankColor, true), lp(dp(34), -2))
-        row.addView(label(san, 15f, pal.text, true), lp(dp(58), -2))
+        row.addView(TextView(this).apply {
+            val b = SpannableStringBuilder(san)
+            sac?.let { val s0 = b.length; b.append(it.mark); b.setSpan(ForegroundColorSpan(sacColor(it)), s0, b.length, 0) }
+            text = b; textSize = 15f; setTextColor(pal.text); typeface = Typeface.DEFAULT_BOLD; includeFontPadding = false
+        }, lp(dp(64), -2))
         row.addView(label(info ?: "", 11f, pal.muted).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }, lp(0, -2, 1f))
         score?.let {
             val pos = it.centipawns >= 0
@@ -478,13 +483,14 @@ class MainActivity : Activity() {
         val decidedPly = if (ctl.mode == Mode.PLAY && ctl.atEnd) (ctl.game.ply downTo maxOf(1, ctl.game.ply - 1)).firstOrNull { ctl.decisions.containsKey(it) } else ctl.view + 1
         val d = decidedPly?.let { ctl.decisions[it] }
         if (d != null) {
-            engineTitle.text = when (d.source) { Personality.Source.BOOK -> "谱着库选择"; Personality.Source.BLUNDER -> "错棋注入"; else -> "谱着候选" }
-            d.candidates.forEachIndexed { i, c -> add(candidateRow(if (c.slip) -1 else i, c.san, c.score, c.label, c.prob, c.uci == d.uci, c.slip)) }
+            engineTitle.text = d.sacrifice?.let { "弃子${it.label}！" } ?: when (d.source) { Personality.Source.BOOK -> "谱着库选择"; Personality.Source.BLUNDER -> "错棋注入"; else -> "谱着候选" }
+            d.candidates.forEachIndexed { i, c -> add(candidateRow(if (c.slip) -1 else i, c.san, c.score, c.label, c.prob, c.uci == d.uci, c.slip, c.sac)) }
             val rank = if (d.rank >= 0) RANK_NAMES.getOrElse(d.rank) { "候选" } else "非候选"
             engineNote.text = when (d.source) {
                 Personality.Source.BOOK -> "✦ 开局阶段：从大师谱着中按权重抽中$rank"
                 Personality.Source.BLUNDER -> "⚑ 低频错棋注入：这一步故意偏离引擎，给你反击机会"
-                else -> "✦ 引擎深度 ${d.depth} 评估后，按偏好抽中$rank"
+                else -> d.sacrifice?.let { "✦ ${it.label} ${it.mark}：弃掉价值 ${d.sacAmount} 兵的子力换取攻势，引擎深度 ${d.depth} 仍认可这步" }
+                    ?: "✦ 引擎深度 ${d.depth} 评估后，按偏好抽中$rank"
             }
             return
         }
@@ -521,8 +527,8 @@ class MainActivity : Activity() {
                 b.setSpan(ForegroundColorSpan(when (gr.grade) { Grade.INACCURACY -> 0xffe8c547.toInt(); Grade.MISTAKE -> 0xfff08a3c.toInt(); else -> 0xffe5484d.toInt() }), s, b.length, 0)
             }
             ctl.decisions[ply]?.let { d ->
-                val tag = when { d.source == Personality.Source.BOOK -> " 谱"; d.source == Personality.Source.BLUNDER -> " 误"; d.rank > 0 -> " ${d.rank + 1}"; else -> null }
-                tag?.let { val s = b.length; b.append(it); b.setSpan(ForegroundColorSpan(if (d.source == Personality.Source.BOOK) pal.gold else if (d.source == Personality.Source.BLUNDER) pal.bad else pal.accent2), s, b.length, 0); b.setSpan(android.text.style.RelativeSizeSpan(0.8f), s, b.length, 0) }
+                val tag = when { d.sacrifice != null -> " ${d.sacrifice.mark}"; d.source == Personality.Source.BOOK -> " 谱"; d.source == Personality.Source.BLUNDER -> " 误"; d.rank > 0 -> " ${d.rank + 1}"; else -> null }
+                tag?.let { val s = b.length; b.append(it); b.setSpan(ForegroundColorSpan(if (d.sacrifice != null) sacColor(d.sacrifice) else if (d.source == Personality.Source.BOOK) pal.gold else if (d.source == Personality.Source.BLUNDER) pal.bad else pal.accent2), s, b.length, 0); b.setSpan(android.text.style.RelativeSizeSpan(0.8f), s, b.length, 0) }
             }
             val current = ctl.view == ply
             moveList.addView(TextView(this).apply {
@@ -533,6 +539,8 @@ class MainActivity : Activity() {
             })
         }
     }
+
+    private fun sacColor(s: Sac) = if (s == Sac.BRILLIANT) 0xff26c6da.toInt() else 0xff7cc0ff.toInt()
 
     private fun resultText(st: GameStatus): String {
         val reason = st.reason?.label ?: ""

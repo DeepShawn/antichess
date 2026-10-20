@@ -21,7 +21,7 @@ val LEVELS = listOf(
     Level("max", "Stockfish 19", 2850, 20, 2500, 3, 1.0, 0, 0.0),
 )
 
-data class Preference(val id: String, val name: String, val note: String, val weights: DoubleArray)
+data class Preference(val id: String, val name: String, val note: String, val weights: DoubleArray, val sacrifice: Boolean = false)
 
 val PREFERENCES = listOf(
     Preference("main", "一选主线", "稳定，接近引擎首选", doubleArrayOf(0.72, 0.16, 0.08, 0.04)),
@@ -29,6 +29,7 @@ val PREFERENCES = listOf(
     Preference("third", "三选偏好", "更有探索性，局面更丰富", doubleArrayOf(0.08, 0.28, 0.52, 0.12)),
     Preference("pure", "纯一选", "复盘主线，几乎总走最佳着", doubleArrayOf(0.96, 0.02, 0.01, 0.01)),
     Preference("random", "均匀探索", "候选着法等概率", doubleArrayOf(0.25, 0.25, 0.25, 0.25)),
+    Preference("sacrifice", "弃子打法", "敢于弃子：适时下出妙棋与好棋", doubleArrayOf(0.4, 0.3, 0.18, 0.12), sacrifice = true),
 )
 
 val RANK_NAMES = listOf("一选", "二选", "三选", "四选", "五选", "六选")
@@ -76,9 +77,11 @@ object Personality {
     }
 
     enum class Source { BOOK, ENGINE, BLUNDER }
-    data class Choice(val uci: String, val rank: Int, val source: Source, val probs: DoubleArray)
+    data class Choice(val uci: String, val rank: Int, val source: Source, val probs: DoubleArray, val sacs: List<Sac?> = emptyList()) {
+        val sacrifice: Sac? get() = sacs.getOrNull(rank)
+    }
 
-    fun choose(book: List<BookMove>, lines: List<EngineLine>, legal: List<String>, level: Level, pref: Preference, blunders: Boolean, rng: Random = Random.Default): Choice {
+    fun choose(book: List<BookMove>, lines: List<EngineLine>, legal: List<String>, level: Level, pref: Preference, blunders: Boolean, rng: Random = Random.Default, fen: String? = null): Choice {
         if (book.isNotEmpty() && level.id != "max") {
             val probs = bookDistribution(book, pref)
             val i = sample(probs, rng)
@@ -88,8 +91,67 @@ object Personality {
             val pool = legal.filter { it != lines.firstOrNull()?.pv?.firstOrNull() }
             return Choice(pool[rng.nextInt(pool.size)], -1, Source.BLUNDER, engineDistribution(lines, level, pref))
         }
-        val probs = engineDistribution(lines, level, pref)
+        var probs = engineDistribution(lines, level, pref)
+        val sacs = if (pref.sacrifice && fen != null) Sacrifice.classify(fen, lines, level) else emptyList()
+        if (sacs.any { it != null }) {
+            // Sacrifices are only ever boosted, never forced: without a sound one the style plays normally.
+            val raw = DoubleArray(probs.size) { probs[it] * (sacs.getOrNull(it)?.boost ?: 1.0) }
+            val total = raw.sum().takeIf { it > 0 } ?: 1.0
+            probs = DoubleArray(raw.size) { raw[it] / total }
+        }
         val i = sample(probs, rng)
-        return Choice(lines.getOrNull(i)?.pv?.firstOrNull() ?: legal.first(), i, Source.ENGINE, probs)
+        return Choice(lines.getOrNull(i)?.pv?.firstOrNull() ?: legal.first(), i, Source.ENGINE, probs, sacs)
+    }
+}
+
+/** Sound sacrifices: 妙棋 (!!) gives up at least a minor piece near the best move; 好棋 (!) the rest. */
+enum class Sac(val mark: String, val label: String, val boost: Double) { BRILLIANT("!!", "妙棋", 8.0), GOOD("!", "好棋", 3.5) }
+
+/** Mirrors the sacrifice logic in web/src/engine/personality.js. */
+object Sacrifice {
+    private const val WINDOW = 4             // plies of the engine line inspected
+    private const val BRILLIANT_MAX_LOSS = 30
+    private const val SOUND_FLOOR = -60
+    private val VALUE = intArrayOf(0, 1, 3, 3, 5, 9, 0)
+
+    private fun balance(pos: Position, side: Int): Int {
+        var total = 0
+        for (sq in 0 until 128) {
+            if (sq and 0x88 != 0) continue
+            val p = pos.board[sq]
+            if (p != 0) total += VALUE[typeOf(p)] * if (colorOf(p) == side) 1 else -1
+        }
+        return total
+    }
+
+    /**
+     * Material (pawns) the mover gives up along [pv]: lost straight away (after our move
+     * and the reply) and still missing at the end of the window; otherwise 0.
+     */
+    fun material(fen: String, pv: List<String>): Int {
+        if (pv.size < 2) return 0
+        val pos = Position(fen); val side = pos.side; val start = balance(pos, side)
+        var plies = 0; var immediate = 0
+        for (uci in pv.take(WINDOW)) {
+            val m = pos.parseMove(uci)
+            if (m == 0 || !pos.make(m)) break
+            if (++plies == 2) immediate = start - balance(pos, side)
+        }
+        return if (plies >= 2) maxOf(0, minOf(immediate, start - balance(pos, side))) else 0
+    }
+
+    /** Classifies engine lines (best first, scores from the mover) as sound sacrifices. */
+    fun classify(fen: String, lines: List<EngineLine>, level: Level): List<Sac?> {
+        if (lines.isEmpty()) return emptyList()
+        val best = lines[0].score.centipawns
+        return lines.map { l ->
+            val amount = material(fen, l.pv)
+            val cp = l.score.centipawns; val loss = best - cp
+            when {
+                amount < 1 || cp < SOUND_FLOOR || loss > level.maxLoss -> null
+                amount >= 2 && loss <= BRILLIANT_MAX_LOSS -> Sac.BRILLIANT
+                else -> Sac.GOOD
+            }
+        }
     }
 }
