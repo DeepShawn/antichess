@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>谱着 · Chess Lab</title>
+  <meta name="description" content="谱着 Chess Lab：内置 Stockfish 19 的国际象棋练习室。大师谱着开局库、像真人一样选择二选三选的 AI、实时评估、复盘曲线与准确率。" />
+  <meta name="theme-color" content="#0b1016" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="assets/icon-192.png" />
+  <link rel="stylesheet" href="styles/app.css" />
+  <link rel="modulepreload" href="src/core/chess.js" />
+</head>
+<body data-theme="midnight" data-board="jade">
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo" src="assets/icon.svg" alt="" width="44" height="44" />
+      <div>
+        <div class="eyebrow">Opening intelligence</div>
+        <h1>谱着 <span>Chess Lab</span></h1>
+      </div>
+    </div>
+    <div class="mode-switch" id="modeSwitch" role="group" aria-label="模式">
+      <button data-mode="play" aria-pressed="true">对局</button>
+      <button data-mode="analysis" aria-pressed="false">分析</button>
+      <i class="mode-glider" aria-hidden="true"></i>
+    </div>
+    <div class="top-actions">
+      <div class="engine-pill" id="enginePill" data-state="loading"><span class="pulse"></span><span id="engineName">引擎加载中</span></div>
+      <button class="icon-btn accent" id="newBtn" data-icon="plus" title="新对局 (N)"><span>新对局</span></button>
+      <button class="icon-btn" id="shareBtn" data-icon="share" title="导入 / 导出"></button>
+      <button class="icon-btn" id="settingsBtn" data-icon="settings" title="设置"></button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="stage">
+      <div class="player" id="playerTop"></div>
+      <div class="board-row">
+        <div class="evalbar" id="evalBar"><div class="ev-fill"></div><span class="ev-label">0.0</span></div>
+        <div class="board-frame"><div id="board"></div></div>
+      </div>
+      <div class="player" id="playerBottom"></div>
+      <div class="toolbar">
+        <div class="turn-line" id="turnLine">载入中…</div>
+        <div class="tools">
+          <button class="tool" id="undoBtn" data-icon="undo" title="悔棋 (U)"><span>悔棋</span></button>
+          <button class="tool" id="hintBtn" data-icon="bulb" title="提示 (H)"><span>提示</span></button>
+          <button class="tool" id="flipBtn" data-icon="flip" title="翻转棋盘 (F)"><span>翻转</span></button>
+          <span class="sep"></span>
+          <button class="tool sq" id="firstBtn" data-icon="first" title="开局 (Home)"></button>
+          <button class="tool sq" id="prevBtn" data-icon="prev" title="上一步 (←)"></button>
+          <button class="tool sq" id="nextBtn" data-icon="next" title="下一步 (→)"></button>
+          <button class="tool sq" id="lastBtn" data-icon="last" title="最新 (End)"></button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panels">
+      <article class="card opening">
+        <div class="eco" id="openingEco">—</div>
+        <div class="otext"><div class="oname" id="openingName">初始局面</div><div class="oen" id="openingEn">Starting position</div></div>
+        <span class="obook" id="openingBook">谱着库内</span>
+      </article>
+
+      <article class="card engine" id="enginePanel">
+        <header><h2 id="engineTitle">谱着候选</h2><span class="meta" id="engineMeta">加载中…</span></header>
+        <div class="scanline" aria-hidden="true"></div>
+        <div id="candidates" class="cands"></div>
+        <p class="note" id="engineNote"></p>
+      </article>
+
+      <article class="card review">
+        <header><h2>评估曲线</h2><button class="chip-btn" id="reviewBtn" data-icon="chart"><span>全盘复盘</span></button></header>
+        <div id="graph" class="graph"></div>
+        <div class="acc">
+          <div class="acc-item w" id="acc-w"><span>白方准确率</span><b>—</b><small>暂无数据</small></div>
+          <div class="acc-item b" id="acc-b"><span>黑方准确率</span><b>—</b><small>暂无数据</small></div>
+        </div>
+      </article>
+
+      <article class="card moves">
+        <header><h2>走法记录</h2><span class="meta">← → 浏览 · 点击跳转</span></header>
+        <div id="moveList" class="move-list"></div>
+      </article>
+    </aside>
+  </main>
+
+  <footer class="foot">谱着 Chess Lab · 引擎 Stockfish 19（GPLv3）· 棋子 Cburnett（CC BY-SA 3.0）· 可离线安装</footer>
+
+  <dialog id="newDialog" class="sheet">
+    <form method="dialog">
+      <header><h2>新对局</h2><button class="icon-btn ghost" data-close data-icon="close" type="button" aria-label="关闭"></button></header>
+      <section>
+        <h3>执子</h3>
+        <div class="color-pick">
+          <button type="button" class="on" data-color="w"><span class="disc w"></span>白方</button>
+          <button type="button" data-color="random"><span class="disc r"></span>随机</button>
+          <button type="button" data-color="b"><span class="disc b"></span>黑方</button>
+        </div>
+      </section>
+      <section>
+        <h3>难度 <small>参考等级分，实际强度随设备与局面浮动</small></h3>
+        <div class="level-grid" id="levelGrid"></div>
+      </section>
+      <section class="row2">
+        <label><h3>引擎偏好</h3><select id="prefSelect" class="select"></select></label>
+        <label class="switch-row"><input type="checkbox" class="toggle" id="blunderToggle" /><span><b>低频错棋注入</b><small>偶尔走出人类式失误</small></span></label>
+      </section>
+      <details>
+        <summary>从 FEN 局面开始</summary>
+        <input id="startFen" class="input mono" placeholder="留空即标准初始局面" spellcheck="false" />
+      </details>
+      <footer><button class="btn primary" id="startBtn">开始对局</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" class="sheet">
+    <form method="dialog">
+      <header><h2>设置</h2><button class="icon-btn ghost" data-close data-icon="close" type="button" aria-label="关闭"></button></header>
+      <section><h3>界面主题</h3><div class="swatches" id="themeGrid"></div></section>
+      <section><h3>棋盘</h3><div class="swatches" id="boardGrid"></div></section>
+      <section class="toggles">
+        <label class="switch-row"><input type="checkbox" class="toggle" data-setting="sound" /><span><b>落子音效</b><small>实时合成，无需下载</small></span></label>
+        <label class="switch-row"><input type="checkbox" class="toggle" data-setting="evalBar" /><span><b>评估条</b><small>棋盘左侧显示优势</small></span></label>
+        <label class="switch-row"><input type="checkbox" class="toggle" data-setting="arrows" /><span><b>分析箭头</b><small>分析模式下显示前三候选</small></span></label>
+        <label class="switch-row"><input type="checkbox" class="toggle" data-setting="coords" /><span><b>棋盘坐标</b><small>a–h / 1–8</small></span></label>
+        <label class="switch-row"><input type="checkbox" class="toggle" data-setting="blunders" /><span><b>错棋注入</b><small>AI 偶尔犯人类式错误</small></span></label>
+      </section>
+      <section>
+        <h3>引擎</h3>
+        <select id="engineSelect" class="select"><option value="stockfish">Stockfish 19 Lite · WASM（推荐）</option><option value="builtin">谱着内置引擎 · 轻量</option></select>
+        <p class="small" id="engineInfo"></p>
+      </section>
+      <section>
+        <h3>快捷键</h3>
+        <div class="keys"><span><kbd>←</kbd><kbd>→</kbd> 浏览</span><span><kbd>N</kbd> 新局</span><span><kbd>U</kbd> 悔棋</span><span><kbd>H</kbd> 提示</span><span><kbd>F</kbd> 翻转</span><span><kbd>A</kbd> 切换模式</span><span>右键拖动 画箭头</span></div>
+      </section>
+    </form>
+  </dialog>
+
+  <dialog id="shareDialog" class="sheet wide">
+    <form method="dialog">
+      <header><h2>导入 / 导出</h2><button class="icon-btn ghost" data-close data-icon="close" type="button" aria-label="关闭"></button></header>
+      <section>
+        <h3>当前棋谱 PGN</h3>
+        <textarea id="pgnText" class="input mono" rows="6" readonly></textarea>
+        <div class="btn-row"><button type="button" class="btn" id="copyPgn" data-icon="copy"><span>复制 PGN</span></button><button type="button" class="btn" id="downloadPgn" data-icon="import"><span>下载 .pgn</span></button><button type="button" class="btn" id="copyLink" data-icon="share"><span>复制分享链接</span></button></div>
+      </section>
+      <section>
+        <h3>当前局面 FEN</h3>
+        <div class="fen-row"><input id="fenText" class="input mono" readonly /><button type="button" class="btn" id="copyFen" data-icon="copy"><span>复制</span></button></div>
+      </section>
+      <section>
+        <h3>导入 PGN 或 FEN</h3>
+        <textarea id="importText" class="input mono" rows="4" placeholder="粘贴 PGN 棋谱或 FEN 局面，也可以把 .pgn 文件直接拖进页面" spellcheck="false"></textarea>
+        <div class="btn-row"><button class="btn primary" id="importBtn">导入并分析</button><label class="btn file">选择文件<input type="file" id="importFile" accept=".pgn,.txt,.fen" hidden /></label></div>
+      </section>
+    </form>
+  </dialog>
+
+  <dialog id="overDialog" class="sheet over">
+    <div class="over-crown"></div>
+    <h2 class="over-title">对局结束</h2>
+    <p class="over-sub"></p>
+    <div class="btn-row center">
+      <button class="btn primary" id="overReview" data-icon="chart"><span>复盘本局</span></button>
+      <button class="btn" id="overNew" data-icon="plus"><span>再来一局</span></button>
+      <button class="btn" id="overShare" data-icon="share"><span>导出</span></button>
+    </div>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <noscript><p class="noscript">谱着 Chess Lab 需要启用 JavaScript。</p></noscript>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
