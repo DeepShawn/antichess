@@ -24,7 +24,9 @@
       </div>
     </div>
     <div class="mode-switch" id="modeSwitch" role="group" aria-label="模式">
-      <button data-mode="play" aria-pressed="true">对局</button>
+      <button data-mode="play" aria-pressed="true" title="人机对战">人机</button>
+      <button data-mode="pvp" aria-pressed="false" title="同屏双人对战">双人</button>
+      <button data-mode="watch" aria-pressed="false" title="观看 AI 对战">观战</button>
       <button data-mode="analysis" aria-pressed="false">分析</button>
       <i class="mode-glider" aria-hidden="true"></i>
     </div>
@@ -49,6 +51,7 @@
         <div class="tools">
           <button class="tool" id="undoBtn" data-icon="undo" title="悔棋 (U)"><span>悔棋</span></button>
           <button class="tool" id="hintBtn" data-icon="bulb" title="提示 (H)"><span>提示</span></button>
+          <button class="tool" id="pauseBtn" title="暂停 / 继续 (空格)" hidden></button>
           <button class="tool" id="flipBtn" data-icon="flip" title="翻转棋盘 (F)"><span>翻转</span></button>
           <span class="sep"></span>
           <button class="tool sq" id="firstBtn" data-icon="first" title="开局 (Home)"></button>
@@ -95,6 +98,14 @@
     <form method="dialog">
       <header><h2>新对局</h2><button class="icon-btn ghost" data-close data-icon="close" type="button" aria-label="关闭"></button></header>
       <section>
+        <h3>模式</h3>
+        <div class="color-pick mode-pick">
+          <button type="button" class="on" data-gmode="play"><span class="mode-ic">♟</span>人机对战</button>
+          <button type="button" data-gmode="pvp"><span class="mode-ic">⇄</span>双人同屏</button>
+          <button type="button" data-gmode="watch"><span class="mode-ic">◉</span>AI 观战</button>
+        </div>
+      </section>
+      <section class="only-play">
         <h3>执子</h3>
         <div class="color-pick">
           <button type="button" class="on" data-color="w"><span class="disc w"></span>白方</button>
@@ -102,11 +113,12 @@
           <button type="button" data-color="b"><span class="disc b"></span>黑方</button>
         </div>
       </section>
-      <section>
-        <h3>难度 <small>参考等级分，实际强度随设备与局面浮动</small></h3>
+      <section class="only-ai">
+        <h3 id="levelTitle">难度 <small>参考等级分，实际强度随设备与局面浮动</small></h3>
         <div class="level-grid" id="levelGrid"></div>
+        <label class="only-watch black-level"><h3>黑方 AI 难度</h3><select id="blackLevel" class="select"></select></label>
       </section>
-      <section class="row2">
+      <section class="row2 only-ai">
         <label><h3>引擎偏好</h3><select id="prefSelect" class="select"></select></label>
         <label class="switch-row"><input type="checkbox" class="toggle" id="blunderToggle" /><span><b>低频错棋注入</b><small>偶尔走出人类式失误</small></span></label>
       </section>
@@ -129,6 +141,7 @@
         <label class="switch-row"><input type="checkbox" class="toggle" data-setting="arrows" /><span><b>分析箭头</b><small>分析模式下显示前三候选</small></span></label>
         <label class="switch-row"><input type="checkbox" class="toggle" data-setting="coords" /><span><b>棋盘坐标</b><small>a–h / 1–8</small></span></label>
         <label class="switch-row"><input type="checkbox" class="toggle" data-setting="blunders" /><span><b>错棋注入</b><small>AI 偶尔犯人类式错误</small></span></label>
+        <label class="switch-row"><input type="checkbox" class="toggle" data-setting="autoFlip" /><span><b>双人自动翻转</b><small>同屏对战时棋盘转向走棋方</small></span></label>
       </section>
       <section>
         <h3>引擎</h3>
@@ -137,7 +150,7 @@
       </section>
       <section>
         <h3>快捷键</h3>
-        <div class="keys"><span><kbd>←</kbd><kbd>→</kbd> 浏览</span><span><kbd>N</kbd> 新局</span><span><kbd>U</kbd> 悔棋</span><span><kbd>H</kbd> 提示</span><span><kbd>F</kbd> 翻转</span><span><kbd>A</kbd> 切换模式</span><span>右键拖动 画箭头</span></div>
+        <div class="keys"><span><kbd>←</kbd><kbd>→</kbd> 浏览</span><span><kbd>N</kbd> 新局</span><span><kbd>U</kbd> 悔棋</span><span><kbd>H</kbd> 提示</span><span><kbd>F</kbd> 翻转</span><span><kbd>A</kbd> 分析模式</span><span><kbd>空格</kbd> 观战暂停</span><span>右键拖动 画箭头</span></div>
       </section>
     </form>
   </dialog>

@@ -21,7 +21,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('puzhe.' + k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 
-const DEFAULTS = { theme: 'midnight', boardTheme: 'jade', level: 2, preference: 'second', blunders: true, sound: true, arrows: true, coords: true, evalBar: true, engine: 'stockfish' };
+const DEFAULTS = { theme: 'midnight', boardTheme: 'jade', level: 2, preference: 'second', blunders: true, sound: true, arrows: true, coords: true, evalBar: true, engine: 'stockfish', autoFlip: true };
 const settings = { ...DEFAULTS, ...store.get('settings', {}) };
 const saveSettings = () => store.set('settings', settings);
 
@@ -30,7 +30,8 @@ const BOARDS = [['jade', '翡翠'], ['walnut', '胡桃'], ['slate', '青石'], [
 
 // ───────────────────────── state ─────────────────────────
 const state = {
-  game: new Game(), mode: 'play', playerColor: 'w', view: 0,
+  // mode: 'play' (人机) | 'pvp' (同屏双人) | 'watch' (AI 观战) | 'analysis'
+  game: new Game(), mode: 'play', playerColor: 'w', view: 0, watch: { w: 2, b: 2 }, paused: false,
   evals: [], notes: [], choices: [], lines: [], live: null,
   thinking: false, hint: null, token: 0, reviewing: false, endShown: false,
 };
@@ -42,6 +43,11 @@ const level = () => LEVELS[settings.level];
 const turnAt = ply => (ply % 2 === 0) === (state.game.startFen.split(' ')[1] === 'w') ? 'w' : 'b';
 const fenAt = ply => (ply === 0 ? state.game.startFen : state.game.history[ply - 1].fen);
 const atEnd = () => state.view === state.game.ply;
+const MODES = ['play', 'pvp', 'watch', 'analysis'];
+const sideName = c => (c === 'w' ? '白' : '黑');
+/** Whether the engine plays `color` in the current mode. */
+const isAI = color => state.mode === 'watch' || (state.mode === 'play' && color !== state.playerColor);
+const levelFor = color => (state.mode === 'watch' ? LEVELS[state.watch[color]] ?? level() : level());
 
 function toast(text, kind = '') {
   const el = document.createElement('div');
@@ -90,7 +96,7 @@ function regrade(p) {
 
 function persist() {
   store.set('game', {
-    pgn: state.game.pgn(), mode: state.mode, playerColor: state.playerColor,
+    pgn: state.game.pgn(), mode: state.mode, playerColor: state.playerColor, watch: state.watch,
     evals: state.evals, notes: state.notes, choices: state.choices, level: settings.level,
   });
 }
@@ -106,7 +112,7 @@ function schedule() {
     state.evals[ply] = { cp: st.winner ? (st.winner === 'w' ? 10000 : -10000) : 0, depth: 99 };
     regrade(ply); persist(); finish(st); render(); return;
   }
-  if (state.mode === 'play' && state.game.turn() !== state.playerColor) engineTurn(token);
+  if (isAI(state.game.turn()) && !(state.mode === 'watch' && state.paused)) engineTurn(token);
   else analyzeCurrent(token);
 }
 
@@ -132,7 +138,7 @@ async function analyzeCurrent(token) {
 
 async function engineTurn(token) {
   state.thinking = true; render();
-  const lv = level(), ply = state.game.ply, fen = state.game.fen(), started = performance.now();
+  const lv = levelFor(state.game.turn()), ply = state.game.ply, fen = state.game.fen(), started = performance.now();
   const sf = engine.kind === 'stockfish';
   const bookMoves = lv.id === 'max' ? [] : book?.candidates(fen) ?? [];
   const res = await engine.analyze({
@@ -150,11 +156,12 @@ async function engineTurn(token) {
     ? bookMoves.map((b, i) => ({ uci: b.uci, san: b.san, label: b.name, prob: decision.probs[i] }))
     : res.lines.map((l, i) => ({ uci: l.pv[0], san: uciToSan(fen, l.pv[0]), score: whiteScore(l, turnAt(ply)), prob: decision.probs[i], sac: decision.sacs?.[i] || null }));
   if (decision.source === 'blunder' && !candidates.some(c => c.uci === decision.uci)) candidates.push({ uci: decision.uci, san: uciToSan(fen, decision.uci), prob: 0, slip: true });
-  const wait = 380 + Math.random() * 380 - (performance.now() - started);
+  // Spectators need time to follow the game, so AI-vs-AI moves are paced more slowly.
+  const wait = (state.mode === 'watch' ? 900 : 380) + Math.random() * 380 - (performance.now() - started);
   if (wait > 0) await sleep(wait);
   if (token !== state.token) return;
   const sacLine = decision.sacrifice && res.lines[decision.rank];
-  state.choices[ply + 1] = { source: decision.source, rank: decision.rank, uci: decision.uci, candidates, depth: res.depth, engine: engine.name,
+  state.choices[ply + 1] = { source: decision.source, rank: decision.rank, uci: decision.uci, candidates, depth: res.depth, engine: engine.name, level: lv.name,
     sacrifice: decision.sacrifice || null, sacAmount: sacLine ? sacrificedMaterial(fen, sacLine.pv) : 0 };
   state.thinking = false;
   const rec = state.game.move(decision.uci);
@@ -170,6 +177,8 @@ function finish(st) {
 
 // ───────────────────────── user actions ─────────────────────────
 function onUserMove(m) {
+  if (state.mode === 'watch') return;
+  if (state.mode === 'pvp' && !atEnd()) return;
   if (state.mode === 'play' && (state.thinking || state.game.turn() !== state.playerColor || !atEnd())) return;
   if (!atEnd()) truncateTo(state.view);
   const rec = state.game.move(m);
@@ -189,6 +198,19 @@ function afterMove(rec) {
   state.view = state.game.ply; state.hint = null;
   play(rec.check ? 'check' : rec.captured ? 'capture' : 'move');
   persist(); render(true); schedule();
+  // Hot-seat: turn the board to the player whose move it is, after the move animation.
+  if (state.mode === 'pvp' && settings.autoFlip && !state.game.status().over) {
+    const ply = state.game.ply;
+    setTimeout(() => { if (state.mode === 'pvp' && state.game.ply === ply) { board.setOrientation(state.game.turn()); render(); } }, 520);
+  }
+}
+
+function togglePause() {
+  if (state.mode !== 'watch') return;
+  state.paused = !state.paused;
+  if (state.paused) { state.token++; engine.cancel(); state.thinking = false; }
+  toast(state.paused ? '观战已暂停' : '继续观战');
+  render(); schedule();
 }
 
 function seek(ply) {
@@ -201,10 +223,12 @@ function undo() {
   state.token++; engine.cancel(); state.thinking = false;
   let target = state.game.ply - 1;
   if (state.mode === 'play') { while (target > 0 && turnAt(target) !== state.playerColor) target--; if (turnAt(target) !== state.playerColor) target = 0; }
+  if (state.mode === 'watch') state.paused = true; // stepping back while the AIs keep playing would be pointless
   truncateTo(target);
   state.view = state.game.ply;
+  if (state.mode === 'pvp' && settings.autoFlip) board.setOrientation(state.game.turn());
   persist(); render(true); schedule();
-  toast('已悔棋');
+  toast(state.mode === 'watch' ? '已后退一步，观战暂停' : '已悔棋');
 }
 
 function hint() {
@@ -218,20 +242,27 @@ function hint() {
 function setMode(mode) {
   if (mode === state.mode) return;
   if (!atEnd()) truncateTo(state.view);
-  state.mode = mode; state.hint = null;
-  if (mode === 'play') { state.playerColor = state.game.turn(); state.endShown = false; board.setOrientation(state.playerColor); }
-  toast(mode === 'analysis' ? '分析模式：双方自由走子，引擎持续分析' : `对局模式：你执${state.playerColor === 'w' ? '白' : '黑'}，从当前局面继续`);
+  state.mode = mode; state.hint = null; state.paused = false;
+  if (mode !== 'analysis') state.endShown = false;
+  if (mode === 'play') { state.playerColor = state.game.turn(); board.setOrientation(state.playerColor); }
+  if (mode === 'pvp' && settings.autoFlip) board.setOrientation(state.game.turn());
+  toast({
+    play: `人机对战：你执${sideName(state.playerColor)}，从当前局面继续`,
+    pvp: '双人同屏：轮流在同一块棋盘上走棋',
+    watch: `AI 观战：白方 ${levelFor('w').name} 对黑方 ${levelFor('b').name}`,
+    analysis: '分析模式：双方自由走子，引擎持续分析',
+  }[mode]);
   persist(); render(); schedule();
 }
 
-function newGame({ color = 'w', fen = START_FEN } = {}) {
+function newGame({ mode = 'play', color = 'w', fen = START_FEN, watch = state.watch } = {}) {
   state.token++; engine.cancel(); engine.newGame();
   const side = color === 'random' ? (Math.random() < 0.5 ? 'w' : 'b') : color;
   try { state.game = new Game(fen || START_FEN); } catch (e) { toast(e.message, 'bad'); return; }
-  Object.assign(state, { mode: 'play', playerColor: side, view: 0, evals: [], notes: [], choices: [], lines: [], live: null, thinking: false, hint: null, endShown: false });
-  board.setOrientation(side);
+  Object.assign(state, { mode, playerColor: side, watch: { ...watch }, paused: false, view: 0, evals: [], notes: [], choices: [], lines: [], live: null, thinking: false, hint: null, endShown: false });
+  board.setOrientation(mode === 'play' ? side : mode === 'pvp' && settings.autoFlip ? state.game.turn() : 'w');
   persist(); render(true); schedule();
-  toast(`新对局 · 你执${side === 'w' ? '白' : '黑'} · ${level().name} ${level().elo}`);
+  toast(mode === 'pvp' ? '新对局 · 双人同屏' : mode === 'watch' ? `AI 观战 · 白方 ${levelFor('w').name} 对黑方 ${levelFor('b').name}` : `新对局 · 你执${sideName(side)} · ${level().name} ${level().elo}`);
 }
 
 function loadText(text) {
@@ -285,7 +316,8 @@ function render(animate = false) {
   let movable = null;
   if (!st.over) {
     if (state.mode === 'analysis') movable = 'both';
-    else if (atEnd() && !state.thinking && g.turn() === state.playerColor) movable = state.playerColor;
+    else if (state.mode === 'pvp') movable = atEnd() ? g.turn() : null;
+    else if (state.mode === 'play' && atEnd() && !state.thinking && g.turn() === state.playerColor) movable = state.playerColor;
   }
   const dests = new Map();
   if (movable) for (const m of viewGame.moves()) {
@@ -317,6 +349,10 @@ function render(animate = false) {
   $$('#modeSwitch button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === state.mode));
   $('#undoBtn').disabled = !g.ply;
   $('#hintBtn').disabled = state.mode !== 'play' || !atEnd() || state.thinking || st.over;
+  $('#hintBtn').hidden = state.mode === 'watch';
+  $('#pauseBtn').hidden = state.mode !== 'watch';
+  $('#pauseBtn').disabled = st.over;
+  $('#pauseBtn').innerHTML = icon(state.paused ? 'play' : 'pause') + `<span>${state.paused ? '继续' : '暂停'}</span>`;
   $('#firstBtn').disabled = $('#prevBtn').disabled = view === 0;
   $('#nextBtn').disabled = $('#lastBtn').disabled = atEnd();
   document.body.classList.toggle('browsing', !atEnd());
@@ -333,20 +369,24 @@ function material(viewGame) {
 
 function renderPlayers(viewGame) {
   const mat = material(viewGame), bottomColor = board.orientation, topColor = bottomColor === 'w' ? 'b' : 'w';
-  const lv = level();
   const info = color => {
-    if (state.mode === 'analysis') return { name: color === 'w' ? '白方' : '黑方', sub: '分析模式 · 自由走子', ai: false };
-    if (color === state.playerColor) return { name: '你', sub: `执${color === 'w' ? '白' : '黑'} · ${PREFERENCES[settings.preference].name}对手`, ai: false };
-    return { name: `谱着 AI · ${lv.name}`, sub: `参考 ${lv.elo} Elo · ${engine.name}`, ai: true };
+    if (state.mode === 'analysis') return { name: `${sideName(color)}方`, sub: '分析模式 · 自由走子', ai: false };
+    if (state.mode === 'pvp') return { name: `${sideName(color)}方 · 玩家${color === 'w' ? '一' : '二'}`, sub: '双人同屏', ai: false };
+    if (isAI(color)) {
+      const lv = levelFor(color);
+      return { name: `${state.mode === 'watch' ? sideName(color) + '方 ' : ''}谱着 AI · ${lv.name}`, sub: `参考 ${lv.elo} Elo · ${PREFERENCES[settings.preference].name} · ${engine.name}`, ai: true };
+    }
+    return { name: '你', sub: `执${sideName(color)} · ${PREFERENCES[settings.preference].name}对手`, ai: false };
   };
   for (const [el, color] of [[$('#playerTop'), topColor], [$('#playerBottom'), bottomColor]]) {
     const p = info(color), m = mat[color];
     const active = !viewGame.status().over && viewGame.turn() === color;
     el.classList.toggle('active', active);
-    el.classList.toggle('thinking', p.ai && state.thinking);
+    const thinking = p.ai && state.thinking && viewGame.turn() === color;
+    el.classList.toggle('thinking', thinking);
     el.innerHTML = `
       <div class="avatar ${color}">${pieceSvg(color + (p.ai ? 'n' : 'k'))}</div>
-      <div class="pmeta"><div class="pname">${esc(p.name)}${p.ai && state.thinking ? '<span class="dots"><i></i><i></i><i></i></span>' : ''}</div><div class="psub">${esc(p.sub)}</div></div>
+      <div class="pmeta"><div class="pname">${esc(p.name)}${thinking ? '<span class="dots"><i></i><i></i><i></i></span>' : ''}</div><div class="psub">${esc(p.sub)}</div></div>
       <div class="captured">${m.captured.map(t => `<span class="cap">${pieceSvg((color === 'w' ? 'b' : 'w') + t)}</span>`).join('')}${m.diff > 0 ? `<b class="adv">+${m.diff}</b>` : ''}</div>`;
   }
 }
@@ -382,13 +422,13 @@ function renderEngine() {
   panel.classList.toggle('busy', state.thinking || (state.mode === 'analysis' && !live?.done && atEnd()));
 
   // Decision view: the engine is choosing now, or we are looking at the position it chose from.
-  const decidedPly = state.thinking ? null : (state.mode === 'play' ? (atEnd() ? lastEnginePly() : state.view + 1) : state.view + 1);
+  const decidedPly = state.thinking ? null : ((state.mode === 'play' || state.mode === 'watch') && atEnd() ? lastEnginePly() : state.view + 1);
   const choice = decidedPly ? state.choices[decidedPly] : null;
   if (state.thinking) {
     const fen = state.game.fen();
-    const rows = (live?.lines || []).slice(0, level().multipv).map((l, i) => ({ rank: i, san: uciToSan(fen, l.pv[0]), score: whiteScore(l, state.game.turn()), pv: pvToSan(fen, l.pv, 5).slice(1).join(' ') }));
+    const rows = (live?.lines || []).slice(0, levelFor(state.game.turn()).multipv).map((l, i) => ({ rank: i, san: uciToSan(fen, l.pv[0]), score: whiteScore(l, state.game.turn()), pv: pvToSan(fen, l.pv, 5).slice(1).join(' ') }));
     list.innerHTML = rows.length ? rows.map(r => candRow(r)).join('') : skeleton();
-    $('#engineTitle').textContent = '谱着思考中';
+    $('#engineTitle').textContent = state.mode === 'watch' ? `${sideName(state.game.turn())}方 AI 思考中` : '谱着思考中';
     note.innerHTML = `${icon('sparkle')}<span>按「${PREFERENCES[settings.preference].name}」从候选中抽样，模拟真人选择</span>`;
     return;
   }
@@ -410,6 +450,18 @@ function renderEngine() {
     if (!rows.length && state.evals[state.view]?.best) rows.push({ rank: 0, san: uciToSan(fen, state.evals[state.view].best), score: state.evals[state.view] });
     list.innerHTML = rows.length ? rows.map(r => candRow(r)).join('') : skeleton();
     note.innerHTML = `${icon('cpu')}<span>${state.mode === 'analysis' ? '持续分析中，棋盘箭头显示前三候选' : '历史局面评估'}</span>`;
+    return;
+  }
+  if (state.mode === 'pvp') {
+    $('#engineTitle').textContent = '双人同屏';
+    list.innerHTML = `<div class="empty">${sideName(state.game.turn())}方走棋。引擎只在后台记录评估，不给提示；终局后可看评估曲线、准确率并一键复盘。</div>`;
+    note.innerHTML = `${icon('flip')}<span>自动翻转棋盘：${settings.autoFlip ? '开（可在设置中关闭）' : '关（可在设置中开启）'}</span>`;
+    return;
+  }
+  if (state.mode === 'watch') {
+    $('#engineTitle').textContent = 'AI 观战';
+    list.innerHTML = `<div class="empty">${state.paused ? '观战已暂停，点「继续」恢复。' : '双方 AI 轮流思考，这里会展示每一步的候选着法与抽样概率。'}</div>`;
+    note.innerHTML = `${icon('cpu')}<span>白方 ${levelFor('w').name} 对黑方 ${levelFor('b').name}</span>`;
     return;
   }
   $('#engineTitle').textContent = '谱着候选';
@@ -478,7 +530,9 @@ function renderStatus(st) {
   const turn = $('#turnLine');
   if (!atEnd()) turn.textContent = `查看第 ${state.view} 步 · 按 → 回到当前`;
   else if (st.over) turn.textContent = resultText(st);
-  else if (state.mode === 'analysis') turn.textContent = `${state.game.turn() === 'w' ? '白' : '黑'}方走 · 分析模式`;
+  else if (state.mode === 'analysis') turn.textContent = `${sideName(state.game.turn())}方走 · 分析模式`;
+  else if (state.mode === 'pvp') turn.textContent = `${sideName(state.game.turn())}方走棋 · 双人同屏${st.check ? ' · 被将军！' : ''}`;
+  else if (state.mode === 'watch') turn.textContent = state.paused ? '观战已暂停' : `${sideName(state.game.turn())}方 AI 思考中…`;
   else if (state.thinking) turn.textContent = '谱着正在思考…';
   else turn.textContent = `轮到你 · 执${state.playerColor === 'w' ? '白' : '黑'}${st.check ? ' · 被将军！' : ''}`;
 }
@@ -492,7 +546,8 @@ function resultText(st) {
 function showGameOver(st) {
   const d = $('#overDialog');
   const youWin = state.mode === 'play' && st.winner === state.playerColor, youLose = state.mode === 'play' && st.winner && st.winner !== state.playerColor;
-  d.querySelector('.over-title').textContent = st.result === '1/2-1/2' ? '和棋' : state.mode === 'play' ? (youWin ? '你赢了！' : '谱着获胜') : `${st.winner === 'w' ? '白方' : '黑方'}获胜`;
+  d.querySelector('.over-title').textContent = st.result === '1/2-1/2' ? '和棋' : state.mode === 'play' ? (youWin ? '你赢了！' : '谱着获胜')
+    : state.mode === 'watch' ? `${sideName(st.winner)}方 AI（${levelFor(st.winner).name}）获胜` : `${sideName(st.winner)}方获胜`;
   d.querySelector('.over-sub').textContent = `${resultText(st)} · 共 ${Math.ceil(state.game.ply / 2)} 回合`;
   d.querySelector('.over-crown').className = 'over-crown ' + (youWin ? 'win' : youLose ? 'lose' : 'draw');
   d.querySelector('.over-crown').innerHTML = pieceSvg((st.winner || 'w') + (st.result === '1/2-1/2' ? 'q' : 'k'));
@@ -501,17 +556,27 @@ function showGameOver(st) {
 
 function openNewGame() {
   const d = $('#newDialog');
+  d.querySelector('#blackLevel').innerHTML = LEVELS.map((l, i) => `<option value="${i}" ${i === state.watch.b ? 'selected' : ''}>${l.name} · ${l.elo} Elo</option>`).join('');
+  setNewGameMode(state.mode === 'analysis' ? 'play' : state.mode);
   d.querySelector('#levelGrid').innerHTML = LEVELS.map((l, i) => `<button type="button" class="level ${i === settings.level ? 'on' : ''}" data-level="${i}"><b>${l.name}</b><span>${l.elo} Elo</span><i style="--p:${(i + 1) / LEVELS.length}"></i></button>`).join('');
   d.querySelector('#prefSelect').innerHTML = Object.entries(PREFERENCES).map(([k, p]) => `<option value="${k}" ${k === settings.preference ? 'selected' : ''}>${p.name} · ${p.note}</option>`).join('');
   d.querySelector('#blunderToggle').checked = settings.blunders;
   d.showModal();
 }
 
+/** Shows the new-game options that apply to the chosen mode. */
+function setNewGameMode(mode) {
+  const d = $('#newDialog');
+  d.dataset.gmode = mode;
+  d.querySelectorAll('[data-gmode]').forEach(x => x.classList.toggle('on', x.dataset.gmode === mode));
+  d.querySelector('#levelTitle').firstChild.textContent = mode === 'watch' ? '白方 AI 难度 ' : '难度 ';
+}
+
 function openSettings() {
   const d = $('#settingsDialog');
   d.querySelector('#themeGrid').innerHTML = THEMES.map(([k, n, c]) => `<button type="button" class="swatch ${settings.theme === k ? 'on' : ''}" data-theme="${k}" style="--c:${c}"><i></i>${n}</button>`).join('');
   d.querySelector('#boardGrid').innerHTML = BOARDS.map(([k, n]) => `<button type="button" class="bswatch ${settings.boardTheme === k ? 'on' : ''}" data-board="${k}"><i class="b-${k}"></i>${n}</button>`).join('');
-  for (const k of ['sound', 'coords', 'arrows', 'evalBar', 'blunders']) d.querySelector(`[data-setting="${k}"]`).checked = settings[k];
+  for (const k of ['sound', 'coords', 'arrows', 'evalBar', 'blunders', 'autoFlip']) d.querySelector(`[data-setting="${k}"]`).checked = settings[k];
   d.querySelector('#engineSelect').value = settings.engine;
   d.querySelector('#engineInfo').textContent = engine.kind === 'stockfish' ? '当前：Stockfish 19 Lite（WASM，单线程，本地运行）' : '当前：谱着内置引擎（PVS + 置换表，纯 JavaScript）';
   d.showModal();
@@ -519,7 +584,8 @@ function openSettings() {
 
 function openShare() {
   const d = $('#shareDialog');
-  d.querySelector('#pgnText').value = state.game.pgn({ White: state.mode === 'play' ? (state.playerColor === 'w' ? '你' : `谱着 ${level().name}`) : '?', Black: state.mode === 'play' ? (state.playerColor === 'b' ? '你' : `谱着 ${level().name}`) : '?' });
+  const who = c => state.mode === 'pvp' ? `玩家${c === 'w' ? '一' : '二'}` : isAI(c) ? `谱着 ${levelFor(c).name}` : state.mode === 'play' ? '你' : '?';
+  d.querySelector('#pgnText').value = state.game.pgn({ White: who('w'), Black: who('b') });
   d.querySelector('#fenText').value = fenAt(state.view);
   d.querySelector('#importText').value = '';
   d.showModal();
@@ -546,6 +612,7 @@ function wire() {
   $('#shareBtn').onclick = openShare;
   $('#undoBtn').onclick = undo;
   $('#hintBtn').onclick = hint;
+  $('#pauseBtn').onclick = togglePause;
   $('#flipBtn').onclick = () => { board.setOrientation(board.orientation === 'w' ? 'b' : 'w'); render(); };
   $('#firstBtn').onclick = () => seek(0);
   $('#prevBtn').onclick = () => seek(state.view - 1);
@@ -560,13 +627,15 @@ function wire() {
   nd.addEventListener('click', e => {
     const lv = e.target.closest('.level'); if (lv) { settings.level = +lv.dataset.level; nd.querySelectorAll('.level').forEach(x => x.classList.toggle('on', x === lv)); }
     const c = e.target.closest('[data-color]'); if (c) { color = c.dataset.color; nd.querySelectorAll('[data-color]').forEach(x => x.classList.toggle('on', x === c)); }
+    const m = e.target.closest('[data-gmode]'); if (m && m.tagName === 'BUTTON') setNewGameMode(m.dataset.gmode);
   });
   nd.querySelector('#startBtn').onclick = e => {
     e.preventDefault();
     settings.preference = nd.querySelector('#prefSelect').value;
     settings.blunders = nd.querySelector('#blunderToggle').checked;
     saveSettings(); nd.close();
-    newGame({ color, fen: nd.querySelector('#startFen').value.trim() || START_FEN });
+    const mode = nd.dataset.gmode || 'play';
+    newGame({ mode, color, fen: nd.querySelector('#startFen').value.trim() || START_FEN, watch: { w: settings.level, b: +nd.querySelector('#blackLevel').value } });
   };
 
   // Settings dialog
@@ -633,7 +702,8 @@ function wire() {
     else if (k === 'n') openNewGame();
     else if (k === 'u') undo();
     else if (k === 'h') hint();
-    else if (k === 'a') setMode(state.mode === 'play' ? 'analysis' : 'play');
+    else if (k === 'a') setMode(state.mode === 'analysis' ? 'play' : 'analysis');
+    else if (k === ' ' && state.mode === 'watch') togglePause();
     else return;
     e.preventDefault();
   });
@@ -655,7 +725,8 @@ function restore() {
   try {
     const g = Game.fromPgn(saved.pgn);
     Object.assign(state, {
-      game: g, mode: saved.mode === 'analysis' ? 'analysis' : 'play', playerColor: saved.playerColor === 'b' ? 'b' : 'w', view: g.ply,
+      game: g, mode: MODES.includes(saved.mode) ? saved.mode : 'play', playerColor: saved.playerColor === 'b' ? 'b' : 'w', view: g.ply,
+      watch: saved.watch && LEVELS[saved.watch.w] && LEVELS[saved.watch.b] ? saved.watch : state.watch,
       evals: saved.evals || [], notes: saved.notes || [], choices: saved.choices || [], endShown: g.status().over,
     });
   } catch { /* corrupt save: start fresh */ }
@@ -669,7 +740,7 @@ async function boot() {
   board = new Board($('#board'), { onMove: onUserMove });
   graph = new EvalGraph($('#graph'), seek);
   restore();
-  board.setOrientation(state.mode === 'play' ? state.playerColor : 'w');
+  board.setOrientation(state.mode === 'play' ? state.playerColor : state.mode === 'pvp' && settings.autoFlip ? state.game.turn() : 'w');
   wire();
   render();
   document.body.classList.add('ready');

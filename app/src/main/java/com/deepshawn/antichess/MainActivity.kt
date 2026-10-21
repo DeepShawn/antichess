@@ -89,6 +89,11 @@ class MainActivity : Activity() {
     private lateinit var moveList: FlowLayout
     private var whiteBottom = true
     private var lastPosKey = ""
+    // Content signatures: views are rebuilt only when what they show changes (rebuilding
+    // them on every engine update made the scrolling content jump).
+    private var playersSig = ""
+    private var engineSig = ""
+    private var movesSig = ""
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -99,7 +104,7 @@ class MainActivity : Activity() {
         ctl.onEvent = ::handleEvent
         buildUi()
         ctl.start()
-        whiteBottom = ctl.mode == Mode.ANALYSIS || ctl.playerWhite
+        syncOrientation()
         render()
         showLastCrash()
     }
@@ -220,16 +225,12 @@ class MainActivity : Activity() {
         scroll.addView(content)
 
         // Mode switch + engine pill
-        val modeRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val seg = LinearLayout(this).apply { setPadding(dp(4), dp(4), dp(4), dp(4)); background = rounded(pal.panel, dpf(13), pal.line, dp(1)) }
-        modeTabs = listOf("对局" to Mode.PLAY, "分析" to Mode.ANALYSIS).map { (t, m) ->
-            label(t, 14f, pal.muted, true).apply { gravity = Gravity.CENTER; setPadding(dp(20), dp(8), dp(20), dp(8)); tag = m; setOnClickListener { ctl.setMode(m); syncOrientation(); render() } }
+        modeTabs = Mode.entries.map { m ->
+            label(m.label, 14f, pal.muted, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)); tag = m; setOnClickListener { ctl.setMode(m); syncOrientation(); render() } }
         }
-        modeTabs.forEach { seg.addView(it) }
-        modeRow.addView(seg)
-        enginePill = label("引擎加载中", 11.5f, pal.muted).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL; maxLines = 1 }
-        modeRow.addView(enginePill, lp(0, -2, 1f) { marginStart = dp(10) })
-        content.addView(modeRow, lp(-1, -2) { bottomMargin = dp(8) })
+        modeTabs.forEach { seg.addView(it, lp(0, -2, 1f)) }
+        content.addView(seg, lp(-1, -2) { bottomMargin = dp(8) })
 
         playerTop = LinearLayout(this); content.addView(playerTop, lp(-1, dp(52)))
 
@@ -248,14 +249,18 @@ class MainActivity : Activity() {
         val toolbar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         tools = linkedMapOf(
             "undo" to iconButton("undo") { ctl.undo() }, "bulb" to iconButton("bulb") { ctl.showHint() },
+            "pause" to iconButton("pause") { ctl.togglePause() },
             "flip" to iconButton("flip") { whiteBottom = !whiteBottom; render() },
             "first" to iconButton("first") { ctl.seek(0) }, "prev" to iconButton("prev") { ctl.seek(ctl.view - 1) },
             "next" to iconButton("next") { ctl.seek(ctl.view + 1) }, "last" to iconButton("last") { ctl.seek(ctl.game.ply) },
         )
         tools.values.forEachIndexed { i, v -> toolbar.addView(v, lp(0, dp(42), 1f) { if (i > 0) marginStart = dp(6) }) }
         content.addView(toolbar, lp(-1, -2) { topMargin = dp(4) })
-        turnLine = label("", 12.5f, pal.muted).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(4)) }
-        content.addView(turnLine, lp(-1, -2))
+        val statusRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(8), dp(4), dp(4)) }
+        turnLine = label("", 12.5f, pal.muted).apply { maxLines = 1 }
+        enginePill = label("引擎加载中", 11.5f, pal.muted).apply { maxLines = 1 }
+        statusRow.addView(turnLine, lp(0, -2, 1f)); statusRow.addView(enginePill)
+        content.addView(statusRow, lp(-1, -2))
 
         // Opening card
         val opening = card().apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -275,7 +280,8 @@ class MainActivity : Activity() {
         engineTitle = label("谱着候选", 14.5f, pal.text, true); engineMeta = label("", 11.5f, pal.muted)
         eh.addView(engineTitle, lp(0, -2, 1f)); eh.addView(engineMeta)
         engineCard.addView(eh, lp(-1, -2) { bottomMargin = dp(10) })
-        candidates = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; minimumHeight = dp(110) }
+        // A stable minimum height keeps the cards below from moving while lines stream in.
+        candidates = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; minimumHeight = dp(3 * 46) }
         engineCard.addView(candidates)
         engineNote = label("", 12f, pal.accent).apply { setPadding(dp(11), dp(9), dp(11), dp(9)); background = rounded(withAlpha(pal.accent, 0.09f), dpf(10)) }
         engineCard.addView(engineNote, lp(-1, -2) { topMargin = dp(10) })
@@ -307,10 +313,16 @@ class MainActivity : Activity() {
         content.addView(label("谱着 Chess Lab · 引擎 Stockfish 19（GPLv3）· 棋子 Cburnett（CC BY-SA 3.0）", 10.5f, pal.faint).apply { gravity = Gravity.CENTER; setPadding(0, dp(16), 0, 0) }, lp(-1, -2))
 
         setContentView(root)
-        lastPosKey = ""
+        lastPosKey = ""; playersSig = ""; engineSig = ""; movesSig = ""
     }
 
-    private fun syncOrientation() { whiteBottom = ctl.mode == Mode.ANALYSIS || ctl.playerWhite }
+    private fun syncOrientation() {
+        whiteBottom = when (ctl.mode) {
+            Mode.PLAY -> ctl.playerWhite
+            Mode.PVP -> if (ctl.autoFlip) ctl.game.whiteToMove else whiteBottom
+            else -> true
+        }
+    }
 
     // ───────────── rendering ─────────────
     private fun render() {
@@ -328,13 +340,18 @@ class MainActivity : Activity() {
         lastPosKey = posKey
 
         val analysis = ctl.mode == Mode.ANALYSIS
-        val canMove = !st.over && (analysis || (ctl.atEnd && !ctl.thinking && g.whiteToMove == ctl.playerWhite))
+        val canMove = !st.over && when (ctl.mode) {
+            Mode.ANALYSIS -> true
+            Mode.PVP -> ctl.atEnd
+            Mode.PLAY -> ctl.atEnd && !ctl.thinking && g.whiteToMove == ctl.playerWhite
+            Mode.WATCH -> false
+        }
         val dests = HashMap<String, MutableList<Dest>>()
         if (canMove) {
             val legal = viewGame.legalUci()
             for (u in legal) { val list = dests.getOrPut(u.substring(0, 2)) { mutableListOf() }; val to = u.substring(2, 4); if (list.none { it.to == to }) list.add(Dest(to, u.length == 5)) }
         }
-        board.setInteractive(if (canMove && !analysis) ctl.playerWhite else null, canMove && analysis, dests)
+        board.setInteractive(if (canMove && !analysis) g.whiteToMove else null, canMove && analysis, dests)
 
         val arrows = ArrayList<Arrow>()
         ctl.hint?.takeIf { ctl.atEnd }?.let { arrows.add(Arrow(it.substring(0, 2), it.substring(2, 4), Color.argb(235, 245, 166, 35), 0.18f)) }
@@ -367,7 +384,11 @@ class MainActivity : Activity() {
         accBlack.text = accText("黑方准确率", ctl.accuracy(false), false)
 
         tools["undo"]?.isEnabled = g.ply > 0
-        tools["bulb"]?.isEnabled = !analysis && ctl.atEnd && !ctl.thinking && !st.over
+        tools["bulb"]?.isEnabled = ctl.mode == Mode.PLAY && ctl.atEnd && !ctl.thinking && !st.over
+        tools["bulb"]?.visibility = if (ctl.mode == Mode.WATCH) View.GONE else View.VISIBLE
+        tools["pause"]?.visibility = if (ctl.mode == Mode.WATCH) View.VISIBLE else View.GONE
+        tools["pause"]?.isEnabled = !st.over
+        ((tools["pause"] as? FrameLayout)?.getChildAt(0) as? IconView)?.kind = if (ctl.paused) "play" else "pause"
         tools["first"]?.isEnabled = view > 0; tools["prev"]?.isEnabled = view > 0
         tools["next"]?.isEnabled = !ctl.atEnd; tools["last"]?.isEnabled = !ctl.atEnd
         tools.values.forEach { v -> (v as FrameLayout).getChildAt(0).isEnabled = v.isEnabled; v.alpha = if (v.isEnabled) 1f else 0.5f }
@@ -377,6 +398,8 @@ class MainActivity : Activity() {
             !ctl.atEnd -> "查看第 $view 步 · 点 › 回到当前"
             st.over -> resultText(st)
             analysis -> "${if (g.whiteToMove) "白" else "黑"}方走 · 分析模式"
+            ctl.mode == Mode.PVP -> "${if (g.whiteToMove) "白" else "黑"}方走棋 · 双人同屏${if (st.check) " · 被将军！" else ""}"
+            ctl.mode == Mode.WATCH -> if (ctl.paused) "观战已暂停" else "${if (g.whiteToMove) "白" else "黑"}方 AI 思考中…"
             ctl.thinking -> "谱着正在思考…"
             else -> "轮到你 · 执${if (ctl.playerWhite) "白" else "黑"}${if (st.check) " · 被将军！" else ""}"
         }
@@ -401,22 +424,35 @@ class MainActivity : Activity() {
         val start = intArrayOf(8, 2, 2, 2, 1); val value = intArrayOf(1, 3, 3, 5, 9)
         fun score(w: Boolean) = (0..4).sumOf { count[w]!![it] * value[it] }
         fun lost(w: Boolean) = (0..4).flatMap { t -> List(maxOf(0, start[t] - count[w]!![t])) { (if (w) "w" else "b") + types[t] } }
-        for ((container, white) in listOf(playerTop to !whiteBottom, playerBottom to whiteBottom)) {
+        val over = viewGame.status().over
+        data class P(val white: Boolean, val name: String, val sub: String, val ai: Boolean, val active: Boolean, val thinking: Boolean, val codes: List<String>, val adv: Int)
+        val players = listOf(!whiteBottom, whiteBottom).map { white ->
+            val side = if (white) "白" else "黑"
+            val ai = ctl.isAI(white)
+            val lv = ctl.levelFor(white)
+            val (name, sub) = when {
+                ctl.mode == Mode.ANALYSIS -> "${side}方" to "分析模式 · 自由走子"
+                ctl.mode == Mode.PVP -> "${side}方 · 玩家${if (white) "一" else "二"}" to "双人同屏"
+                ai -> "${if (ctl.mode == Mode.WATCH) "${side}方 " else ""}谱着 AI · ${lv.name}" to "参考 ${lv.elo} Elo · ${ctl.preference.name} · ${ctl.engine?.name ?: "加载中"}"
+                else -> "你" to "执$side · ${ctl.preference.name}对手"
+            }
+            val active = !over && viewGame.whiteToMove == white
+            P(white, name, sub, ai, active, ai && ctl.thinking && active, lost(!white), score(white) - score(!white))
+        }
+        val sig = players.joinToString("|")
+        if (sig == playersSig) return
+        playersSig = sig
+        for ((container, p) in listOf(playerTop, playerBottom).zip(players)) {
             container.removeAllViews()
             container.gravity = Gravity.CENTER_VERTICAL
             container.setPadding(dp(8), dp(6), dp(12), dp(6))
-            val active = !viewGame.status().over && viewGame.whiteToMove == white
-            container.background = if (active) rounded(pal.panel, dpf(14), pal.line, dp(1)) else null
-            val analysis = ctl.mode == Mode.ANALYSIS
-            val ai = !analysis && white != ctl.playerWhite
-            val name = when { analysis -> if (white) "白方" else "黑方"; ai -> "谱着 AI · ${ctl.level.name}"; else -> "你" }
-            val sub = when { analysis -> "分析模式 · 自由走子"; ai -> "参考 ${ctl.level.elo} Elo · ${ctl.engine?.name ?: "加载中"}"; else -> "执${if (white) "白" else "黑"} · ${ctl.preference.name}对手" }
-            container.addView(PieceIcon((if (white) "w" else "b") + if (ai) "n" else "k", if (white) 0xffe6ece9.toInt() else 0xff27313a.toInt()), lp(dp(38), dp(38)))
+            container.background = if (p.active) rounded(pal.panel, dpf(14), pal.line, dp(1)) else null
+            container.addView(PieceIcon((if (p.white) "w" else "b") + if (p.ai) "n" else "k", if (p.white) 0xffe6ece9.toInt() else 0xff27313a.toInt()), lp(dp(38), dp(38)))
             val meta = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
-            meta.addView(label(name + if (ai && ctl.thinking) "  · 思考中" else "", 14f, if (ai && ctl.thinking) pal.accent else pal.text, true))
-            meta.addView(label(sub, 11.5f, pal.muted).apply { maxLines = 1 }, lp(-2, -2) { topMargin = dp(3) })
+            meta.addView(label(p.name + if (p.thinking) "  · 思考中" else "", 14f, if (p.thinking) pal.accent else pal.text, true).apply { maxLines = 1 })
+            meta.addView(label(p.sub, 11.5f, pal.muted).apply { maxLines = 1 }, lp(-2, -2) { topMargin = dp(3) })
             container.addView(meta, lp(0, -2, 1f))
-            container.addView(CapturedView().apply { codes = lost(!white); adv = score(white) - score(!white) })
+            container.addView(CapturedView().apply { codes = p.codes; adv = p.adv })
         }
     }
 
@@ -464,57 +500,80 @@ class MainActivity : Activity() {
     }
 
     private fun renderEngine() {
-        candidates.removeAllViews()
         val live = ctl.live
         engineMeta.text = live?.takeIf { it.depth > 0 }?.let { "深度 ${it.depth}" + if (it.nps > 0) " · ${it.nps / 1000} kn/s" else "" } ?: ctl.engineLabel()
-        fun add(v: View) = candidates.addView(v, lp(-1, -2) { bottomMargin = dp(6) })
+        // Rows are described first (key + factory) so identical content does not rebuild views.
+        val rows = ArrayList<Pair<String, () -> View>>()
+        fun row(rank: Int, san: String, score: Score?, info: String?, prob: Double?, chosen: Boolean, slip: Boolean, sac: Sac? = null) =
+            rows.add("$rank|$san|${score?.format()}|$info|${prob?.let { Math.round(it * 100) }}|$chosen|$slip|$sac" to { candidateRow(rank, san, score, info, prob, chosen, slip, sac) })
+        fun text(t: String) = rows.add(t to { label(t, 12.5f, pal.muted) })
         val fen = ctl.fenAt(ctl.view)
-        if (ctl.thinking) {
-            engineTitle.text = "谱着思考中"
-            val whiteTurn = ctl.game.whiteToMove
-            live?.lines?.take(ctl.level.multipv)?.forEachIndexed { i, l ->
-                val u = l.pv.firstOrNull() ?: return@forEachIndexed
-                add(candidateRow(i, ctl.sanOf(fen, u), if (whiteTurn) l.score else -l.score, ctl.pvSan(fen, l.pv, 5).drop(1).joinToString(" "), null, false, false))
+        val side = if (ctl.game.whiteToMove) "白" else "黑"
+        val decidedPly = if ((ctl.mode == Mode.PLAY || ctl.mode == Mode.WATCH) && ctl.atEnd) (ctl.game.ply downTo maxOf(1, ctl.game.ply - 1)).firstOrNull { ctl.decisions.containsKey(it) } else ctl.view + 1
+        val d = if (ctl.thinking) null else decidedPly?.let { ctl.decisions[it] }
+        when {
+            ctl.thinking -> {
+                engineTitle.text = if (ctl.mode == Mode.WATCH) "${side}方 AI 思考中" else "谱着思考中"
+                val whiteTurn = ctl.game.whiteToMove
+                live?.lines?.take(ctl.levelFor(whiteTurn).multipv)?.forEachIndexed { i, l ->
+                    val u = l.pv.firstOrNull() ?: return@forEachIndexed
+                    row(i, ctl.sanOf(fen, u), if (whiteTurn) l.score else -l.score, ctl.pvSan(fen, l.pv, 5).drop(1).joinToString(" "), null, false, false)
+                }
+                if (rows.isEmpty()) text("正在计算候选着法…")
+                engineNote.text = "✦ 按「${ctl.preference.name}」从候选中抽样，模拟真人选择"
             }
-            if (candidates.childCount == 0) add(label("正在计算候选着法…", 12.5f, pal.muted))
-            engineNote.text = "✦ 按「${ctl.preference.name}」从候选中抽样，模拟真人选择"
-            return
-        }
-        val decidedPly = if (ctl.mode == Mode.PLAY && ctl.atEnd) (ctl.game.ply downTo maxOf(1, ctl.game.ply - 1)).firstOrNull { ctl.decisions.containsKey(it) } else ctl.view + 1
-        val d = decidedPly?.let { ctl.decisions[it] }
-        if (d != null) {
-            engineTitle.text = d.sacrifice?.let { "弃子${it.label}！" } ?: when (d.source) { Personality.Source.BOOK -> "谱着库选择"; Personality.Source.BLUNDER -> "错棋注入"; else -> "谱着候选" }
-            d.candidates.forEachIndexed { i, c -> add(candidateRow(if (c.slip) -1 else i, c.san, c.score, c.label, c.prob, c.uci == d.uci, c.slip, c.sac)) }
-            val rank = if (d.rank >= 0) RANK_NAMES.getOrElse(d.rank) { "候选" } else "非候选"
-            engineNote.text = when (d.source) {
-                Personality.Source.BOOK -> "✦ 开局阶段：从大师谱着中按权重抽中$rank"
-                Personality.Source.BLUNDER -> "⚑ 低频错棋注入：这一步故意偏离引擎，给你反击机会"
-                else -> d.sacrifice?.let { "✦ ${it.label} ${it.mark}：弃掉价值 ${d.sacAmount} 兵的子力换取攻势，引擎深度 ${d.depth} 仍认可这步" }
-                    ?: "✦ 引擎深度 ${d.depth} 评估后，按偏好抽中$rank"
+            d != null -> {
+                engineTitle.text = d.sacrifice?.let { "弃子${it.label}！" } ?: when (d.source) { Personality.Source.BOOK -> "谱着库选择"; Personality.Source.BLUNDER -> "错棋注入"; else -> "谱着候选" }
+                d.candidates.forEachIndexed { i, c -> row(if (c.slip) -1 else i, c.san, c.score, c.label, c.prob, c.uci == d.uci, c.slip, c.sac) }
+                val rank = if (d.rank >= 0) RANK_NAMES.getOrElse(d.rank) { "候选" } else "非候选"
+                engineNote.text = when (d.source) {
+                    Personality.Source.BOOK -> "✦ 开局阶段：从大师谱着中按权重抽中$rank"
+                    Personality.Source.BLUNDER -> "⚑ 低频错棋注入：这一步故意偏离引擎，给对手反击机会"
+                    else -> d.sacrifice?.let { "✦ ${it.label} ${it.mark}：弃掉价值 ${d.sacAmount} 兵的子力换取攻势，引擎深度 ${d.depth} 仍认可这步" }
+                        ?: "✦ 引擎深度 ${d.depth} 评估后，按偏好抽中$rank"
+                }
             }
-            return
-        }
-        if (ctl.mode == Mode.ANALYSIS || (!ctl.atEnd && ctl.evals[ctl.view] != null)) {
-            engineTitle.text = "引擎分析"
-            val whiteTurn = ctl.turnWhiteAt(ctl.view)
-            val lines = if (ctl.atEnd) live?.lines.orEmpty() else emptyList()
-            lines.take(3).forEachIndexed { i, l ->
-                val u = l.pv.firstOrNull() ?: return@forEachIndexed
-                add(candidateRow(i, ctl.sanOf(fen, u), if (whiteTurn) l.score else -l.score, ctl.pvSan(fen, l.pv, 7).drop(1).joinToString(" "), null, false, false))
+            ctl.mode == Mode.ANALYSIS || (!ctl.atEnd && ctl.evals[ctl.view] != null) -> {
+                engineTitle.text = "引擎分析"
+                val whiteTurn = ctl.turnWhiteAt(ctl.view)
+                val lines = if (ctl.atEnd) live?.lines.orEmpty() else emptyList()
+                lines.take(3).forEachIndexed { i, l ->
+                    val u = l.pv.firstOrNull() ?: return@forEachIndexed
+                    row(i, ctl.sanOf(fen, u), if (whiteTurn) l.score else -l.score, ctl.pvSan(fen, l.pv, 7).drop(1).joinToString(" "), null, false, false)
+                }
+                if (rows.isEmpty()) ctl.evals[ctl.view]?.let { e -> e.best?.let { row(0, ctl.sanOf(fen, it), e.score, null, null, false, false) } }
+                if (rows.isEmpty()) text("分析中…")
+                engineNote.text = if (ctl.mode == Mode.ANALYSIS) "◎ 持续分析中，棋盘箭头显示前三候选" else "◎ 历史局面评估"
             }
-            if (candidates.childCount == 0) ctl.evals[ctl.view]?.let { e -> e.best?.let { add(candidateRow(0, ctl.sanOf(fen, it), e.score, null, null, false, false)) } }
-            if (candidates.childCount == 0) add(label("分析中…", 12.5f, pal.muted))
-            engineNote.text = if (ctl.mode == Mode.ANALYSIS) "◎ 持续分析中，棋盘箭头显示前三候选" else "◎ 历史局面评估"
-            return
+            ctl.mode == Mode.PVP -> {
+                engineTitle.text = "双人同屏"
+                text("${side}方走棋。引擎只在后台记录评估，不给提示；终局后可看评估曲线、准确率并一键复盘。")
+                engineNote.text = "⇄ 自动翻转棋盘：${if (ctl.autoFlip) "开（可在设置中关闭）" else "关（可在设置中开启）"}"
+            }
+            ctl.mode == Mode.WATCH -> {
+                engineTitle.text = "AI 观战"
+                text(if (ctl.paused) "观战已暂停，点 ▶ 继续。" else "双方 AI 轮流思考，这里会展示每一步的候选着法与抽样概率。")
+                engineNote.text = "◎ 白方 ${ctl.levelFor(true).name} 对黑方 ${ctl.levelFor(false).name}"
+            }
+            else -> {
+                engineTitle.text = "谱着候选"
+                text("轮到你走棋。引擎回应时，这里会展示它考虑的候选着法与抽样概率。")
+                engineNote.text = "💡 需要帮助？点灯泡查看引擎推荐"
+            }
         }
-        engineTitle.text = "谱着候选"
-        add(label("轮到你走棋。引擎回应时，这里会展示它考虑的候选着法与抽样概率。", 12.5f, pal.muted))
-        engineNote.text = "💡 需要帮助？点灯泡查看引擎推荐"
+        val sig = rows.joinToString("\n") { it.first }
+        if (sig == engineSig) return
+        engineSig = sig
+        candidates.removeAllViews()
+        for ((_, make) in rows) candidates.addView(make(), lp(-1, -2) { bottomMargin = dp(6) })
     }
 
     private fun renderMoves() {
-        moveList.removeAllViews()
         val g = ctl.game
+        val sig = "${g.startFen}|${g.ply}|${ctl.view}|${(1..g.ply).joinToString(",") { "${ctl.grades[it]?.grade}${ctl.decisions[it]?.let { d -> "${d.source}${d.rank}${d.sacrifice}" }}" }}"
+        if (sig == movesSig) return
+        movesSig = sig
+        moveList.removeAllViews()
         if (g.ply == 0) { moveList.addView(label("尚未落子 · 拖动或点击棋子开始", 12.5f, pal.muted)); return }
         val blackFirst = g.startFen.split(' ')[1] == "b"; val startNo = g.startFen.split(' ')[5].toIntOrNull() ?: 1
         g.history.forEachIndexed { i, rec ->
@@ -550,7 +609,14 @@ class MainActivity : Activity() {
     // ───────────── events ─────────────
     private fun handleEvent(e: UiEvent) {
         when (e) {
-            is UiEvent.Moved -> sounds.play(if (e.record.check) "check" else if (e.record.captured != null) "capture" else "move")
+            is UiEvent.Moved -> {
+                sounds.play(if (e.record.check) "check" else if (e.record.captured != null) "capture" else "move")
+                // Hot-seat: turn the board to the player whose move it is, after the move animation.
+                if (ctl.mode == Mode.PVP && ctl.autoFlip) {
+                    val ply = ctl.game.ply
+                    board.postDelayed({ if (ctl.mode == Mode.PVP && ctl.game.ply == ply && !ctl.game.status().over) { whiteBottom = ctl.game.whiteToMove; render() } }, 520)
+                }
+            }
             is UiEvent.Toast -> toast(e.text)
             is UiEvent.GameOver -> { sounds.play("end"); board.postDelayed({ gameOverDialog(e.status) }, 650) }
         }
@@ -623,21 +689,40 @@ class MainActivity : Activity() {
     }
 
     private fun newGameDialog(): Dialog = sheet("新对局") { dialog ->
-        var color = "w"; var levelIdx = ctl.levelIndex; var pref = ctl.preferenceId; var blunders = ctl.blunders
-        section("执子")
-        choiceRow(listOf("w" to "♔ 白方", "random" to "◐ 随机", "b" to "♚ 黑方"), color, 3) { color = it }
-        section("难度 · 参考等级分")
-        choiceRow(LEVELS.indices.map { it to "${LEVELS[it].name}\n${LEVELS[it].elo} Elo" }, levelIdx, 3) { levelIdx = it }
-        section("引擎偏好")
-        choiceRow(PREFERENCES.map { it.id to it.name }, pref, 3) { pref = it }
-        toggle("低频错棋注入", "AI 偶尔走出人类式失误", blunders) { blunders = it }
+        var mode = if (ctl.mode == Mode.ANALYSIS) Mode.PLAY else ctl.mode
+        var color = "w"; var levelIdx = ctl.levelIndex; var blackIdx = ctl.watchBlack; var pref = ctl.preferenceId; var blunders = ctl.blunders
+        fun group() = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val playOnly = group(); val aiOnly = group(); val watchOnly = group()
+        lateinit var levelTitle: TextView
+        fun applyMode() {
+            playOnly.visibility = if (mode == Mode.PLAY) View.VISIBLE else View.GONE
+            aiOnly.visibility = if (mode == Mode.PVP) View.GONE else View.VISIBLE
+            watchOnly.visibility = if (mode == Mode.WATCH) View.VISIBLE else View.GONE
+            levelTitle.text = if (mode == Mode.WATCH) "白方 AI 难度 · 参考等级分" else "难度 · 参考等级分"
+        }
+        section("模式")
+        choiceRow(listOf(Mode.PLAY to "♟ 人机对战", Mode.PVP to "⇄ 双人同屏", Mode.WATCH to "◉ AI 观战"), mode, 3) { mode = it; applyMode() }
+        playOnly.section("执子")
+        playOnly.choiceRow(listOf("w" to "♔ 白方", "random" to "◐ 随机", "b" to "♚ 黑方"), color, 3) { color = it }
+        addView(playOnly)
+        aiOnly.section("难度 · 参考等级分")
+        levelTitle = aiOnly.getChildAt(aiOnly.childCount - 1) as TextView
+        aiOnly.choiceRow(LEVELS.indices.map { it to "${LEVELS[it].name}\n${LEVELS[it].elo} Elo" }, levelIdx, 3) { levelIdx = it }
+        watchOnly.section("黑方 AI 难度")
+        watchOnly.choiceRow(LEVELS.indices.map { it to "${LEVELS[it].name}\n${LEVELS[it].elo} Elo" }, blackIdx, 3) { blackIdx = it }
+        aiOnly.addView(watchOnly)
+        aiOnly.section("引擎偏好")
+        aiOnly.choiceRow(PREFERENCES.map { it.id to it.name }, pref, 3) { pref = it }
+        aiOnly.toggle("低频错棋注入", "AI 偶尔走出人类式失误", blunders) { blunders = it }
+        addView(aiOnly)
+        applyMode()
         section("从 FEN 局面开始（可选）")
         val fen = EditText(context).apply { hint = "留空即标准初始局面"; textSize = 12f; setTextColor(pal.text); setHintTextColor(pal.faint); typeface = Typeface.MONOSPACE; background = rounded(pal.panel2, dpf(11), pal.line, dp(1)); setPadding(dp(12), dp(10), dp(12), dp(10)); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS }
         addView(fen, lp(-1, -2))
-        addView(button("开始对局", primary = true) {
+        addView(button("开始", primary = true) {
             ctl.levelIndex = levelIdx; ctl.preferenceId = pref; ctl.blunders = blunders; ctl.saveSettings()
             dialog.dismiss()
-            ctl.newGame(color, fen.text.toString().trim().ifEmpty { START_FEN })
+            ctl.newGame(mode, color, fen.text.toString().trim().ifEmpty { START_FEN }, levelIdx, blackIdx)
             syncOrientation(); render()
         }, lp(-1, -2) { topMargin = dp(18) })
     }
@@ -653,6 +738,7 @@ class MainActivity : Activity() {
         toggle("分析箭头", "分析模式下显示前三候选", ctl.arrows) { ctl.arrows = it; ctl.saveSettings(); render() }
         toggle("棋盘坐标", "a–h / 1–8", ctl.coords) { ctl.coords = it; ctl.saveSettings(); render() }
         toggle("错棋注入", "AI 偶尔犯人类式错误", ctl.blunders) { ctl.blunders = it; ctl.saveSettings() }
+        toggle("双人自动翻转", "同屏对战时棋盘转向走棋方", ctl.autoFlip) { ctl.autoFlip = it; ctl.saveSettings(); syncOrientation(); render() }
         section("引擎")
         choiceRow(listOf(true to "Stockfish 19", false to "谱着内置引擎"), ctl.preferStockfish, 2) { sf -> scope.launch { ctl.switchEngine(sf) } }
         addView(label(if (ctl.engine?.isStockfish == true) "当前：Stockfish 19（arm64 本地进程，多线程）" else "当前：谱着内置引擎（Kotlin 实现，PVS + 置换表）", 12f, pal.muted))
@@ -682,7 +768,13 @@ class MainActivity : Activity() {
         if (isFinishing) return
         val playing = ctl.mode == Mode.PLAY
         val youWin = playing && st.winnerWhite == ctl.playerWhite
-        val title = when { st.result == "1/2-1/2" -> "和棋"; playing -> if (youWin) "你赢了！" else "谱着获胜"; else -> "${if (st.winnerWhite == true) "白方" else "黑方"}获胜" }
+        val winner = if (st.winnerWhite == true) "白方" else "黑方"
+        val title = when {
+            st.result == "1/2-1/2" -> "和棋"
+            playing -> if (youWin) "你赢了！" else "谱着获胜"
+            ctl.mode == Mode.WATCH -> "$winner AI（${ctl.levelFor(st.winnerWhite == true).name}）获胜"
+            else -> "${winner}获胜"
+        }
         sheet(title) { dialog ->
             val crown = PieceIcon((if (st.winnerWhite == false) "b" else "w") + if (st.reason == EndReason.CHECKMATE) "k" else "q", withAlpha(if (youWin) pal.gold else pal.accent, 0.18f))
             addView(crown, lp(dp(88), dp(88)) { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(4) })

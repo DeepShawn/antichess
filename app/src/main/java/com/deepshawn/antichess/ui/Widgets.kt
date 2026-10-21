@@ -165,7 +165,9 @@ class FlowLayout(context: Context, private val hGap: Int, private val vGap: Int)
 }
 
 /** Small stroke icons drawn with canvas primitives (no drawable resources). */
-class IconView(context: Context, private val kind: String, var tint: Int) : View(context) {
+class IconView(context: Context, kind: String, var tint: Int) : View(context) {
+    var kind = kind
+        set(v) { if (field != v) { field = v; invalidate() } }
     private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val path = Path()
     override fun onDraw(canvas: Canvas) {
@@ -189,6 +191,8 @@ class IconView(context: Context, private val kind: String, var tint: Int) : View
             "last" -> { path.moveTo(6f, 17f); path.lineTo(11f, 12f); path.lineTo(6f, 7f); path.moveTo(13f, 17f); path.lineTo(18f, 12f); path.lineTo(13f, 7f); canvas.drawPath(path, p) }
             "chart" -> { path.moveTo(3f, 3f); path.lineTo(3f, 21f); path.lineTo(21f, 21f); path.moveTo(7f, 15f); path.lineTo(11f, 11f); path.lineTo(14f, 14f); path.lineTo(19f, 8f); canvas.drawPath(path, p) }
             "close" -> { canvas.drawLine(6f, 6f, 18f, 18f, p); canvas.drawLine(18f, 6f, 6f, 18f, p) }
+            "pause" -> { canvas.drawLine(9f, 6f, 9f, 18f, p); canvas.drawLine(15f, 6f, 15f, 18f, p) }
+            "play" -> { path.moveTo(8f, 5f); path.lineTo(19f, 12f); path.lineTo(8f, 19f); path.close(); canvas.drawPath(path, p) }
         }
         canvas.restore()
     }

@@ -61,11 +61,17 @@ button:disabled { cursor: default; opacity: .38; }
 .eyebrow { font-size: 10px; letter-spacing: 2.4px; text-transform: uppercase; color: var(--accent); font-weight: 700; }
 .brand h1 { margin: 0; font-size: 21px; letter-spacing: -.3px; line-height: 1.15; white-space: nowrap; }
 .brand h1 span { color: var(--muted); font-weight: 500; }
-.mode-switch { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 4px; border-radius: 13px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(14px); }
-.mode-switch button { position: relative; z-index: 1; padding: 7px 22px; border-radius: 9px; color: var(--muted); font-weight: 600; transition: color .25s; }
+.mode-switch { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); padding: 4px; border-radius: 13px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(14px); }
+.mode-switch button { position: relative; z-index: 1; padding: 7px 16px; white-space: nowrap; border-radius: 9px; color: var(--muted); font-weight: 600; transition: color .25s; }
 .mode-switch button[aria-pressed="true"] { color: var(--on-accent); }
-.mode-glider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent-deep)); box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); transition: transform .35s var(--ease); }
-.mode-switch[data-mode="analysis"] .mode-glider { transform: translateX(100%); }
+.mode-glider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(25% - 2px); border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent-deep)); box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); transition: transform .35s var(--ease); }
+.mode-switch[data-mode="pvp"] .mode-glider { transform: translateX(100%); }
+.mode-switch[data-mode="watch"] .mode-glider { transform: translateX(200%); }
+.mode-switch[data-mode="analysis"] .mode-glider { transform: translateX(300%); }
+.tool[hidden] { display: none; }
+.mode-ic { font-size: 22px; line-height: 30px; height: 30px; }
+#newDialog[data-gmode="pvp"] .only-ai, #newDialog:not([data-gmode="play"]) .only-play, #newDialog:not([data-gmode="watch"]) .only-watch { display: none; }
+.black-level { display: block; margin-top: 12px; } .black-level h3 { margin-top: 4px; }
 .top-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
 .engine-pill { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 99px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-size: 12px; white-space: nowrap; backdrop-filter: blur(14px); }
 .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); position: relative; }
