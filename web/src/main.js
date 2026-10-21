@@ -103,6 +103,7 @@ function persist() {
 
 // ───────────────────────── engine orchestration ─────────────────────────
 function schedule() {
+  if (state.hidden) return;
   const token = ++state.token;
   state.live = null; state.lines = [];
   const st = state.game.status();
@@ -116,6 +117,12 @@ function schedule() {
   else analyzeCurrent(token);
 }
 
+/** Engine lines whose first move is legal in the current position (guards against any desync). */
+function fitLines(lines) {
+  const legal = new Set(state.game.moves().map(m => m.uci));
+  return lines.filter(l => l?.pv?.[0] && legal.has(l.pv[0]));
+}
+
 async function analyzeCurrent(token) {
   const ply = state.game.ply, fen = state.game.fen();
   const infinite = state.mode === 'analysis';
@@ -125,13 +132,15 @@ async function analyzeCurrent(token) {
     infinite, depth: infinite ? undefined : sf ? 16 : undefined, movetime: infinite ? undefined : sf ? 2500 : 1200,
   }, info => {
     if (token !== state.token) return;
-    state.lines = info.lines; state.live = info;
-    if (info.lines[0]) setEval(ply, info.lines[0], info.depth);
+    const lines = fitLines(info.lines);
+    state.lines = lines; state.live = { ...info, lines };
+    if (lines[0]) setEval(ply, lines[0], info.depth);
     scheduleRender();
   });
   if (token !== state.token) return;
-  if (res.lines[0]) setEval(ply, res.lines[0], res.depth);
-  state.lines = res.lines; state.live = { ...res, done: true };
+  const lines = fitLines(res.lines);
+  if (lines[0]) setEval(ply, lines[0], res.depth);
+  state.lines = lines; state.live = { ...res, lines, done: true };
   if (state.game.fen() === fen) persist();
   render();
 }
@@ -146,9 +155,10 @@ async function engineTurn(token) {
     depth: lv.depth, movetime: sf ? Math.round(lv.movetime * 1.6) : lv.movetime,
   }, info => {
     if (token !== state.token) return;
-    state.live = info; scheduleRender();
+    state.live = { ...info, lines: fitLines(info.lines) }; scheduleRender();
   });
   if (token !== state.token || res.cancelled && !res.lines.length) return;
+  res.lines = fitLines(res.lines);
   if (res.lines[0]) setEval(ply, res.lines[0], res.depth);
   const legal = state.game.moves().map(m => m.uci);
   const decision = choose({ fen, book: bookMoves, lines: res.lines, legal, level: lv, preference: PREFERENCES[settings.preference], blunders: settings.blunders });
@@ -686,6 +696,12 @@ function wire() {
 
   for (const d of $$('dialog')) d.addEventListener('click', e => { if (e.target === d) d.close(); });
   for (const b of $$('[data-close]')) b.onclick = () => b.closest('dialog').close();
+
+  // Hidden tab: stop the engine (battery, CPU); resume the current mode when visible again.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { state.token++; engine.cancel(); state.thinking = false; state.hidden = true; render(); }
+    else if (state.hidden) { state.hidden = false; schedule(); }
+  });
 
   // Drag & drop a PGN/FEN file anywhere.
   addEventListener('dragover', e => e.preventDefault());

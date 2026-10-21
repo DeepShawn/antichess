@@ -134,6 +134,8 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() { ctl.persist(); super.onPause() }
+    override fun onStart() { super.onStart(); ctl.onForeground() }
+    override fun onStop() { ctl.onBackground(); super.onStop() }
     override fun onDestroy() { ctl.close(); scope.cancel(); super.onDestroy() }
 
     // ───────────── building blocks ─────────────
@@ -516,8 +518,8 @@ class MainActivity : Activity() {
                 engineTitle.text = if (ctl.mode == Mode.WATCH) "${side}方 AI 思考中" else "谱着思考中"
                 val whiteTurn = ctl.game.whiteToMove
                 live?.lines?.take(ctl.levelFor(whiteTurn).multipv)?.forEachIndexed { i, l ->
-                    val u = l.pv.firstOrNull() ?: return@forEachIndexed
-                    row(i, ctl.sanOf(fen, u), if (whiteTurn) l.score else -l.score, ctl.pvSan(fen, l.pv, 5).drop(1).joinToString(" "), null, false, false)
+                    val san = l.pv.firstOrNull()?.let { ctl.sanOrNull(fen, it) } ?: return@forEachIndexed
+                    row(i, san, if (whiteTurn) l.score else -l.score, ctl.pvSan(fen, l.pv, 5).drop(1).joinToString(" "), null, false, false)
                 }
                 if (rows.isEmpty()) text("正在计算候选着法…")
                 engineNote.text = "✦ 按「${ctl.preference.name}」从候选中抽样，模拟真人选择"
@@ -538,12 +540,12 @@ class MainActivity : Activity() {
                 val whiteTurn = ctl.turnWhiteAt(ctl.view)
                 val lines = if (ctl.atEnd) live?.lines.orEmpty() else emptyList()
                 lines.take(3).forEachIndexed { i, l ->
-                    val u = l.pv.firstOrNull() ?: return@forEachIndexed
-                    row(i, ctl.sanOf(fen, u), if (whiteTurn) l.score else -l.score, ctl.pvSan(fen, l.pv, 7).drop(1).joinToString(" "), null, false, false)
+                    val san = l.pv.firstOrNull()?.let { ctl.sanOrNull(fen, it) } ?: return@forEachIndexed
+                    row(i, san, if (whiteTurn) l.score else -l.score, ctl.pvSan(fen, l.pv, 7).drop(1).joinToString(" "), null, false, false)
                 }
                 if (rows.isEmpty()) ctl.evals[ctl.view]?.let { e -> e.best?.let { row(0, ctl.sanOf(fen, it), e.score, null, null, false, false) } }
                 if (rows.isEmpty()) text("分析中…")
-                engineNote.text = if (ctl.mode == Mode.ANALYSIS) "◎ 持续分析中，棋盘箭头显示前三候选" else "◎ 历史局面评估"
+                engineNote.text = if (ctl.mode == Mode.ANALYSIS) "◎ 棋盘箭头显示前三候选 · ${if (ctl.engine?.isStockfish == true) "分析到 $ANALYSIS_DEPTH 层后自动停止以省电" else "持续分析中"}" else "◎ 历史局面评估"
             }
             ctl.mode == Mode.PVP -> {
                 engineTitle.text = "双人同屏"

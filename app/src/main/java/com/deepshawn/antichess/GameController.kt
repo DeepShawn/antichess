@@ -31,6 +31,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** 人机对战 · 同屏双人 · AI 观战 · 分析 */
+/** Stockfish analysis depth on the phone. */
+const val ANALYSIS_DEPTH = 30
+
 enum class Mode(val label: String) { PLAY("人机"), PVP("双人"), WATCH("观战"), ANALYSIS("分析") }
 
 /** White-perspective evaluation of the position after a given ply. */
@@ -86,6 +89,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     var engine: ChessEngine? = null; private set
     var book: OpeningBook? = null; private set
     private var endShown = false
+    private var background = false
     private var job: Job? = null
     private var gen = 0
 
@@ -156,6 +160,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
             onChange(); return
         }
         val eng = engine ?: return
+        if (background) return
         job = scope.launch {
             if (isAI(game.whiteToMove) && !(mode == Mode.WATCH && paused)) engineTurn(eng, g) else analyzeCurrent(eng, g)
         }
@@ -171,9 +176,15 @@ class GameController(context: Context, private val scope: CoroutineScope) {
 
     private suspend fun analyzeCurrent(eng: ChessEngine, g: Int) {
         val ply = game.ply
-        val infinite = mode == Mode.ANALYSIS
-        val req = AnalysisRequest(game.startFen, game.uciMoves(), 3, if (infinite) null else if (eng.isStockfish) 16 else null,
-            if (infinite) null else if (eng.isStockfish) 2500 else 1200, infinite)
+        // Analysis mode stops at depth 30 on Stockfish (strong enough, and a phone should not
+        // run a multi-threaded search forever); the built-in engine caps itself at 30 s.
+        val analysis = mode == Mode.ANALYSIS
+        val req = when {
+            analysis && eng.isStockfish -> AnalysisRequest(game.startFen, game.uciMoves(), 3, depth = ANALYSIS_DEPTH)
+            analysis -> AnalysisRequest(game.startFen, game.uciMoves(), 3, infinite = true)
+            eng.isStockfish -> AnalysisRequest(game.startFen, game.uciMoves(), 3, depth = 16, movetimeMs = 2500)
+            else -> AnalysisRequest(game.startFen, game.uciMoves(), 3, movetimeMs = 1200)
+        }
         val res = eng.analyze(req) { snap -> postInfo(g) { live = snap; setEval(ply, snap.lines.firstOrNull(), snap.depth) } }
         if (g != gen) return
         setEval(ply, res.lines.firstOrNull(), res.depth)
@@ -207,7 +218,24 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         game.move(choice.uci)?.let { afterMove(it) }
     }
 
-    fun sanOf(fen: String, uci: String) = runCatching { Game(fen).move(uci)?.san }.getOrNull() ?: uci
+    fun sanOf(fen: String, uci: String) = sanOrNull(fen, uci) ?: uci
+    /** SAN of [uci] in [fen], or null when the move is not legal there. */
+    fun sanOrNull(fen: String, uci: String) = runCatching { Game(fen).move(uci)?.san }.getOrNull()
+
+    /** The app went to the background: stop the engine so it does not drain the battery. */
+    fun onBackground() {
+        if (background) return
+        background = true
+        job?.cancel(); gen++; thinking = false; live = null
+        persist(); onChange()
+    }
+
+    /** Back in the foreground: resume whatever the current mode needs (the AI's move, analysis…). */
+    fun onForeground() {
+        if (!background) return
+        background = false
+        schedule()
+    }
     fun pvSan(fen: String, pv: List<String>, max: Int): List<String> {
         val g = runCatching { Game(fen) }.getOrNull() ?: return emptyList()
         return pv.take(max).mapNotNull { g.move(it)?.san }
