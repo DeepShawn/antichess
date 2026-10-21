@@ -1,5 +1,6 @@
 // 谱着 personality: turns engine/book candidates into a human-like choice.
 // The same tables are mirrored in Android (core/.../Personality.kt).
+import { Position, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, typeOf, colorOf } from '../core/chess.js';
 
 export const LEVELS = [
   { id: 'novice', name: '入门', elo: 800, depth: 2, movetime: 250, multipv: 6, temperature: 320, maxLoss: 900, blunder: 0.14 },
@@ -16,7 +17,61 @@ export const PREFERENCES = {
   third: { name: '三选偏好', note: '更有探索性，局面更丰富', weights: [0.08, 0.28, 0.52, 0.12] },
   pure: { name: '纯一选', note: '复盘主线，几乎总走最佳着', weights: [0.96, 0.02, 0.01, 0.01] },
   random: { name: '均匀探索', note: '候选着法等概率', weights: [0.25, 0.25, 0.25, 0.25] },
+  sacrifice: { name: '弃子打法', note: '敢于弃子：适时下出妙棋与好棋', weights: [0.4, 0.3, 0.18, 0.12], sacrifice: true },
 };
+
+// ── Sacrifices ──────────────────────────────────────────────────────────────
+// A candidate is a sacrifice when the engine's own line has the mover give up
+// material that is not won back within the next plies — and the engine still
+// rates that line as sound. "Brilliant" (妙棋) gives up at least a minor piece
+// and is (near) the best move; "good" (好棋) covers the remaining sound ones.
+const PIECE_VALUE = { [PAWN]: 1, [KNIGHT]: 3, [BISHOP]: 3, [ROOK]: 5, [QUEEN]: 9 };
+const SAC_WINDOW = 4;          // plies of the PV inspected: our move, their capture, and one more exchange
+const BRILLIANT_MAX_LOSS = 30; // centipawns behind the best move
+const SOUND_FLOOR = -60;       // mover's evaluation after the sacrifice must stay above this
+const SAC_BOOST = { brilliant: 8, good: 3.5 };
+
+export const SAC_LABELS = { brilliant: { mark: '!!', name: '妙棋' }, good: { mark: '!', name: '好棋' } };
+
+function balance(pos, side) {
+  let total = 0;
+  for (let sq = 0; sq < 128; sq++) {
+    if (sq & 0x88) { sq += 7; continue; }
+    const p = pos.board[sq];
+    if (p) total += (PIECE_VALUE[typeOf(p)] || 0) * (colorOf(p) === side ? 1 : -1);
+  }
+  return total;
+}
+
+/**
+ * Material (in pawns) the side to move gives up along `pv`: it must be lost straight
+ * away (after our move and the reply) and still be missing at the end of the first
+ * SAC_WINDOW plies. Anything won back, or lost only later in an exchange, gives 0.
+ */
+export function sacrificedMaterial(fen, pv) {
+  if (!pv || pv.length < 2) return 0;
+  const pos = new Position(fen), side = pos.side, start = balance(pos, side);
+  let plies = 0, immediate = 0;
+  for (const uci of pv.slice(0, SAC_WINDOW)) {
+    const m = pos.parseMove(uci);
+    if (!m || !pos.make(m)) break;
+    if (++plies === 2) immediate = start - balance(pos, side);
+  }
+  return plies >= 2 ? Math.max(0, Math.min(immediate, start - balance(pos, side))) : 0;
+}
+
+/** Classifies engine lines (best first, mover's scores) as brilliant / good / null sacrifices. */
+export function classifySacrifices(fen, lines, level) {
+  if (!lines.length) return [];
+  const best = scoreToCp(lines[0]);
+  return lines.map(l => {
+    const amount = sacrificedMaterial(fen, l.pv);
+    if (amount < 1) return null;
+    const cp = scoreToCp(l), loss = best - cp;
+    if (cp < SOUND_FLOOR || loss > level.maxLoss) return null;
+    return amount >= 2 && loss <= BRILLIANT_MAX_LOSS ? 'brilliant' : 'good';
+  });
+}
 
 export const RANK_NAMES = ['一选', '二选', '三选', '四选', '五选', '六选'];
 
@@ -62,7 +117,7 @@ export function sample(probs, rng = Math.random) {
  * Picks the engine's move.
  * @returns {{uci:string, rank:number, source:'book'|'engine'|'blunder', probs:number[]}}
  */
-export function choose({ book = [], lines = [], legal = [], level, preference, blunders = true, rng = Math.random }) {
+export function choose({ book = [], lines = [], legal = [], level, preference, blunders = true, rng = Math.random, fen }) {
   if (book.length && level.id !== 'max') {
     const probs = bookDistribution(book, preference);
     const i = sample(probs, rng);
@@ -73,7 +128,14 @@ export function choose({ book = [], lines = [], legal = [], level, preference, b
     const pool = legal.filter(u => u !== lines[0]?.pv[0]);
     return { uci: pool[Math.floor(rng() * pool.length)], rank: -1, source: 'blunder', probs: engineDistribution(lines, level, preference) };
   }
-  const probs = engineDistribution(lines, level, preference);
+  let probs = engineDistribution(lines, level, preference);
+  const sacs = preference.sacrifice && fen ? classifySacrifices(fen, lines, level) : [];
+  if (sacs.some(Boolean)) {
+    // Sacrifices are only ever boosted, never forced: without a sound one the style plays normally.
+    const raw = probs.map((p, i) => p * (sacs[i] ? SAC_BOOST[sacs[i]] : 1));
+    const total = raw.reduce((a, b) => a + b, 0) || 1;
+    probs = raw.map(p => p / total);
+  }
   const i = sample(probs, rng);
-  return { uci: lines[i]?.pv[0] ?? legal[0], rank: i, source: 'engine', probs };
+  return { uci: lines[i]?.pv[0] ?? legal[0], rank: i, source: 'engine', probs, sacs, sacrifice: sacs[i] || null };
 }

@@ -13,6 +13,8 @@ import com.deepshawn.antichess.core.OpeningBook
 import com.deepshawn.antichess.core.PREFERENCES
 import com.deepshawn.antichess.core.Personality
 import com.deepshawn.antichess.core.Review
+import com.deepshawn.antichess.core.Sac
+import com.deepshawn.antichess.core.Sacrifice
 import com.deepshawn.antichess.core.START_FEN
 import com.deepshawn.antichess.core.Score
 import com.deepshawn.antichess.engine.AnalysisRequest
@@ -32,8 +34,8 @@ enum class Mode { PLAY, ANALYSIS }
 
 /** White-perspective evaluation of the position after a given ply. */
 data class Eval(val score: Score, val best: String?, val depth: Int)
-data class Candidate(val uci: String, val san: String, val score: Score?, val label: String?, val prob: Double?, val slip: Boolean = false)
-data class Decision(val source: Personality.Source, val rank: Int, val uci: String, val candidates: List<Candidate>, val depth: Int)
+data class Candidate(val uci: String, val san: String, val score: Score?, val label: String?, val prob: Double?, val slip: Boolean = false, val sac: Sac? = null)
+data class Decision(val source: Personality.Source, val rank: Int, val uci: String, val candidates: List<Candidate>, val depth: Int, val sacrifice: Sac? = null, val sacAmount: Int = 0)
 
 sealed interface UiEvent {
     data class Moved(val record: MoveRecord) : UiEvent
@@ -174,22 +176,24 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         thinking = true; onChange()
         val lv = level; val ply = game.ply; val fen = game.fen(); val started = System.currentTimeMillis()
         val bookMoves = if (lv.id == "max") emptyList() else book?.candidates(fen).orEmpty()
-        val res = eng.analyze(AnalysisRequest(game.startFen, game.uciMoves(), lv.multipv, lv.depth, if (eng.isStockfish) (lv.movetime * 1.6).toLong() else lv.movetime.toLong())) { snap ->
+        val res = eng.analyze(AnalysisRequest(game.startFen, game.uciMoves(), if (preference.sacrifice) maxOf(lv.multipv, 5) else lv.multipv, lv.depth, if (eng.isStockfish) (lv.movetime * 1.6).toLong() else lv.movetime.toLong())) { snap ->
             postInfo(g) { live = snap }
         }
         if (g != gen) return
         setEval(ply, res.lines.firstOrNull(), res.depth)
         val legal = game.legalUci()
-        val choice = Personality.choose(bookMoves, res.lines, legal, lv, preference, blunders)
+        val choice = Personality.choose(bookMoves, res.lines, legal, lv, preference, blunders, fen = fen)
         val wTurn = game.whiteToMove
         val candidates = ArrayList<Candidate>()
         if (choice.source == Personality.Source.BOOK) bookMoves.forEachIndexed { i, b -> candidates.add(Candidate(b.uci, b.san, null, b.name, choice.probs[i])) }
-        else res.lines.forEachIndexed { i, l -> candidates.add(Candidate(l.pv.first(), sanOf(fen, l.pv.first()), whiteScore(l, wTurn), null, choice.probs.getOrNull(i))) }
+        else res.lines.forEachIndexed { i, l -> candidates.add(Candidate(l.pv.first(), sanOf(fen, l.pv.first()), whiteScore(l, wTurn), null, choice.probs.getOrNull(i), sac = choice.sacs.getOrNull(i))) }
         if (choice.source == Personality.Source.BLUNDER && candidates.none { it.uci == choice.uci }) candidates.add(Candidate(choice.uci, sanOf(fen, choice.uci), null, null, 0.0, slip = true))
         val wait = 380 + (Math.random() * 380).toLong() - (System.currentTimeMillis() - started)
         if (wait > 0) delay(wait)
         if (g != gen) return
-        decisions[ply + 1] = Decision(choice.source, choice.rank, choice.uci, candidates, res.depth)
+        val sac = if (choice.source == Personality.Source.ENGINE) choice.sacrifice else null
+        decisions[ply + 1] = Decision(choice.source, choice.rank, choice.uci, candidates, res.depth, sac,
+            if (sac != null) Sacrifice.material(fen, res.lines[choice.rank].pv) else 0)
         thinking = false
         game.move(choice.uci)?.let { afterMove(it) }
     }
@@ -306,13 +310,15 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     fun persist() {
         val ev = JSONObject(); for ((k, v) in evals) ev.put(k.toString(), JSONObject().apply { v.score.cp?.let { put("cp", it) }; v.score.mate?.let { put("mate", it) }; put("best", v.best ?: ""); put("depth", v.depth) })
         val dec = JSONObject(); for ((k, d) in decisions) dec.put(k.toString(), JSONObject().apply {
-            put("source", d.source.name); put("rank", d.rank); put("uci", d.uci); put("depth", d.depth)
-            put("candidates", JSONArray().apply { d.candidates.forEach { c -> put(JSONObject().apply { put("uci", c.uci); put("san", c.san); c.score?.cp?.let { put("cp", it) }; c.score?.mate?.let { put("mate", it) }; put("label", c.label ?: ""); put("prob", c.prob ?: -1.0); put("slip", c.slip) }) } })
+            put("source", d.source.name); put("rank", d.rank); put("uci", d.uci); put("depth", d.depth); put("sac", d.sacrifice?.name ?: ""); put("sacAmount", d.sacAmount)
+            put("candidates", JSONArray().apply { d.candidates.forEach { c -> put(JSONObject().apply { put("uci", c.uci); put("san", c.san); c.score?.cp?.let { put("cp", it) }; c.score?.mate?.let { put("mate", it) }; put("label", c.label ?: ""); put("prob", c.prob ?: -1.0); put("slip", c.slip); put("sac", c.sac?.name ?: "") }) } })
         })
         prefs.edit().putString("game", JSONObject().apply {
             put("pgn", game.pgn()); put("mode", mode.name); put("playerWhite", playerWhite); put("evals", ev); put("decisions", dec)
         }.toString()).apply()
     }
+
+    private fun sacOf(name: String): Sac? = Sac.entries.firstOrNull { it.name == name }
 
     private fun scoreOf(o: JSONObject): Score? = when { o.has("mate") -> Score(mate = o.getInt("mate")); o.has("cp") -> Score(cp = o.getInt("cp")); else -> null }
 
@@ -327,8 +333,8 @@ class GameController(context: Context, private val scope: CoroutineScope) {
             o.optJSONObject("decisions")?.let { dec ->
                 for (k in dec.keys()) {
                     val d = dec.getJSONObject(k); val arr = d.getJSONArray("candidates")
-                    val cands = (0 until arr.length()).map { i -> val c = arr.getJSONObject(i); Candidate(c.getString("uci"), c.getString("san"), scoreOf(c), c.optString("label").ifEmpty { null }, c.optDouble("prob", -1.0).takeIf { it >= 0 }, c.optBoolean("slip")) }
-                    decisions[k.toInt()] = Decision(Personality.Source.valueOf(d.getString("source")), d.getInt("rank"), d.getString("uci"), cands, d.optInt("depth"))
+                    val cands = (0 until arr.length()).map { i -> val c = arr.getJSONObject(i); Candidate(c.getString("uci"), c.getString("san"), scoreOf(c), c.optString("label").ifEmpty { null }, c.optDouble("prob", -1.0).takeIf { it >= 0 }, c.optBoolean("slip"), sacOf(c.optString("sac"))) }
+                    decisions[k.toInt()] = Decision(Personality.Source.valueOf(d.getString("source")), d.getInt("rank"), d.getString("uci"), cands, d.optInt("depth"), sacOf(d.optString("sac")), d.optInt("sacAmount"))
                 }
             }
             for (p in 1..g.ply) regrade(p)
