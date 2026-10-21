@@ -8,9 +8,9 @@ import com.deepshawn.antichess.core.Position
 import com.deepshawn.antichess.core.Searcher
 import com.deepshawn.antichess.core.Uci
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -47,75 +47,146 @@ object Engines {
 /**
  * Stockfish over UCI in a child process. The binary ships as lib/arm64-v8a/libstockfish.so so
  * Android extracts it to nativeLibraryDir — the only app location that may be executed on Android 10+.
+ *
+ * Synchronisation: Stockfish answers `go` commands strictly in order, one `bestmove` each. Every
+ * search therefore gets a sequence number and output is routed by that number, never by whichever
+ * job happens to be reading. A search that is slow to stop can no longer hand its lines and
+ * bestmove to the next job (which used to leave every later analysis one position behind).
+ * `ucinewgame` and `setoption` are only sent while the engine is idle (during a search,
+ * `ucinewgame` blocks Stockfish's command loop), and an engine that will not go idle is restarted.
  */
-class StockfishEngine private constructor(private val process: Process) : ChessEngine {
+class StockfishEngine private constructor(private val path: String) : ChessEngine {
     override val name = "Stockfish 19"
     override val isStockfish = true
-    private val writer = process.outputStream.bufferedWriter()
-    private val output = Channel<String>(Channel.UNLIMITED)
-    private val mutex = Mutex()
-    private var multipv = 1
 
-    init {
-        thread(isDaemon = true, name = "stockfish-reader") {
-            runCatching { process.inputStream.bufferedReader().forEachLine { output.trySend(it) } }
-            output.close()
-        }
+    private class Search(val id: Long, val legal: Set<String>, multipv: Int, val onInfo: (AnalysisSnapshot) -> Unit) {
+        val lines = arrayOfNulls<EngineLine>(multipv)
+        var depth = 0; var nps = 0L
+        val done = CompletableDeferred<AnalysisSnapshot>()
+        fun snapshot(best: String? = null) = AnalysisSnapshot(depth, lines.filterNotNull(), nps, best)
     }
 
-    @Synchronized private fun send(cmd: String) { runCatching { writer.write(cmd); writer.newLine(); writer.flush() } }
+    private val lock = Any()
+    private val mutex = Mutex()
+    private var process: Process? = null
+    private var writer: java.io.BufferedWriter? = null
+    private var generation = 0          // bumps on restart; output of an old process is ignored
+    private var sent = 0L               // `go` commands sent to the current process
+    private var finished = 0L           // `bestmove` lines received from it
+    private var current: Search? = null
+    private var alive = false
+    private val waiters = ArrayList<Pair<String, CompletableDeferred<Unit>>>()
+    private var multipv = 1
+    @Volatile private var newGamePending = false
 
-    private suspend fun waitFor(prefix: String): String? { for (line in output) if (line.startsWith(prefix)) return line; return null }
+    private fun launch(): Boolean = synchronized(lock) {
+        process?.destroy()
+        val proc = runCatching { ProcessBuilder(path).redirectErrorStream(true).start() }.getOrNull() ?: return false
+        val gen = ++generation
+        process = proc; writer = proc.outputStream.bufferedWriter()
+        sent = 0; finished = 0; current = null; alive = true; multipv = 1; waiters.clear()
+        thread(isDaemon = true, name = "stockfish-reader") {
+            runCatching { proc.inputStream.bufferedReader().forEachLine { onLine(gen, it) } }
+            synchronized(lock) {
+                if (gen != generation) return@synchronized
+                alive = false
+                current?.let { it.done.complete(it.snapshot()) }; current = null
+            }
+        }
+        true
+    }
+
+    private fun send(cmd: String) = synchronized(lock) { runCatching { writer?.apply { write(cmd); newLine(); flush() } } }
+
+    private fun onLine(gen: Int, line: String) = synchronized(lock) {
+        if (gen != generation) return@synchronized
+        if (line.startsWith("bestmove")) {
+            finished++
+            val s = current
+            if (s != null && s.id == finished) {
+                current = null
+                s.done.complete(s.snapshot(line.split(' ').getOrNull(1)?.takeIf { it in s.legal }))
+            }
+            return@synchronized
+        }
+        val hit = waiters.filter { line.startsWith(it.first) }
+        if (hit.isNotEmpty()) { waiters.removeAll(hit.toSet()); hit.forEach { it.second.complete(Unit) } }
+        val s = current ?: return@synchronized
+        if (s.id != finished + 1) return@synchronized          // output of an older, abandoned search
+        val info = Uci.parseInfo(line) ?: return@synchronized
+        if (info.pv.first() !in s.legal) return@synchronized   // never show a line that does not fit the position
+        // Lines are replaced in place: clearing them per depth made the UI shrink and regrow.
+        if (info.multipv == 1) s.depth = maxOf(s.depth, info.depth)
+        if (info.multipv <= s.lines.size) s.lines[info.multipv - 1] = EngineLine(info.score, info.pv, info.depth)
+        s.nps = info.nps
+        s.onInfo(s.snapshot())
+    }
+
+    private suspend fun expect(prefix: String, cmd: String, timeoutMs: Long): Boolean {
+        val d = CompletableDeferred<Unit>()
+        synchronized(lock) { waiters.add(prefix to d) }
+        send(cmd)
+        return withTimeoutOrNull(timeoutMs) { d.await() } != null
+    }
+
+    private suspend fun handshake(): Boolean {
+        if (!expect("uciok", "uci", 5000)) return false
+        val threads = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 4)
+        send("setoption name Threads value $threads")
+        send("setoption name Hash value 64")
+        return expect("readyok", "isready", 5000)
+    }
+
+    /** Stops any running search and waits until every `go` has been answered; restarts a stuck engine. */
+    private suspend fun ensureIdle() {
+        if (synchronized(lock) { alive && finished >= sent }) return
+        if (synchronized(lock) { alive }) {
+            send("stop")
+            val idle = withTimeoutOrNull(4000) { while (synchronized(lock) { finished < sent }) delay(15) } != null
+            if (idle) return
+        }
+        withContext(Dispatchers.IO) { launch() && handshake() }
+    }
 
     override suspend fun analyze(req: AnalysisRequest, onInfo: (AnalysisSnapshot) -> Unit): AnalysisSnapshot = mutex.withLock {
+        val legal = runCatching { Game(req.startFen).apply { req.moves.forEach { move(it) ?: error(it) } }.legalUci().toSet() }.getOrDefault(emptySet())
+        if (legal.isEmpty()) return@withLock AnalysisSnapshot(0, emptyList())
+        ensureIdle()
+        if (newGamePending) { newGamePending = false; send("ucinewgame") }
         if (multipv != req.multipv) { send("setoption name MultiPV value ${req.multipv}"); multipv = req.multipv }
         send("position fen ${req.startFen}" + if (req.moves.isEmpty()) "" else " moves " + req.moves.joinToString(" "))
+        val search = synchronized(lock) { Search(++sent, legal, req.multipv, onInfo).also { current = it } }
         send(if (req.infinite) "go infinite" else buildString { append("go"); req.depth?.let { append(" depth $it") }; req.movetimeMs?.let { append(" movetime $it") } })
-        var depth = 0; var nps = 0L
-        val lines = arrayOfNulls<EngineLine>(req.multipv)
-        fun snapshot(best: String? = null) = AnalysisSnapshot(depth, lines.filterNotNull(), nps, best)
         try {
-            for (line in output) {
-                if (line.startsWith("bestmove")) return@withLock snapshot(line.split(' ').getOrNull(1))
-                val info = Uci.parseInfo(line) ?: continue
-                // Replace lines in place: clearing them per depth made the UI shrink and regrow.
-                if (info.multipv == 1) depth = maxOf(depth, info.depth)
-                if (info.multipv <= lines.size) lines[info.multipv - 1] = EngineLine(info.score, info.pv, info.depth)
-                nps = info.nps
-                onInfo(snapshot())
-            }
-            snapshot()
+            search.done.await()
         } catch (e: CancellationException) {
-            // Stop the search and consume its bestmove so the next job starts clean.
-            withContext(NonCancellable) { send("stop"); withTimeoutOrNull(3000) { waitFor("bestmove") } }
+            synchronized(lock) { if (current === search) current = null }
+            send("stop") // its bestmove is accounted for by the next ensureIdle()
             throw e
         }
     }
 
-    override fun newGame() { send("ucinewgame") }
-    override fun close() { send("quit"); process.destroy() }
+    /** Deferred to the next search so it is never sent while Stockfish is thinking. */
+    override fun newGame() { newGamePending = true }
+    override fun close() { send("quit"); synchronized(lock) { generation++; process?.destroy() } }
 
     companion object {
-        suspend fun start(context: Context): StockfishEngine? = withContext(Dispatchers.IO) {
-            val candidates = listOfNotNull(
-                File(context.applicationInfo.nativeLibraryDir, "libstockfish.so"),
-                // Pre-Android-10 devices may still execute a copy from app storage.
-                if (Build.VERSION.SDK_INT < 29) copyAsset(context) else null,
-            )
-            for (file in candidates) {
-                if (!file.exists()) continue
-                val engine = runCatching { StockfishEngine(ProcessBuilder(file.absolutePath).redirectErrorStream(true).start()) }.getOrNull() ?: continue
-                engine.send("uci")
-                val ok = withTimeoutOrNull(5000) { engine.waitFor("uciok") } != null
-                if (!ok) { engine.close(); continue }
-                val threads = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 4)
-                engine.send("setoption name Threads value $threads")
-                engine.send("setoption name Hash value 64")
-                engine.send("isready")
-                if (withTimeoutOrNull(5000) { engine.waitFor("readyok") } != null) return@withContext engine
-                engine.close()
+        suspend fun start(context: Context): StockfishEngine? {
+            val candidates = withContext(Dispatchers.IO) {
+                listOfNotNull(
+                    File(context.applicationInfo.nativeLibraryDir, "libstockfish.so"),
+                    // Pre-Android-10 devices may still execute a copy from app storage.
+                    if (Build.VERSION.SDK_INT < 29) copyAsset(context) else null,
+                )
             }
-            null
+            for (file in candidates) if (file.exists()) startAt(file.absolutePath)?.let { return it }
+            return null
+        }
+
+        /** Starts and handshakes the engine binary at [path]; null if it does not speak UCI. */
+        suspend fun startAt(path: String): StockfishEngine? = withContext(Dispatchers.IO) {
+            val engine = StockfishEngine(path)
+            if (engine.launch() && engine.handshake()) engine else { engine.close(); null }
         }
 
         private fun copyAsset(context: Context): File? = runCatching {
