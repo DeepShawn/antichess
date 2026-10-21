@@ -72,7 +72,9 @@ export class EngineClient {
     if (line.startsWith('bestmove')) { job.bestmove = line.split(' ')[1]; job.finish(false); return; }
     const info = parseInfo(line);
     if (!info || info.bound) return;
-    if (info.multipv === 1 && info.depth !== job.depth) { job.depth = info.depth; job.lines = []; }
+    // Lines are replaced in place as each depth arrives; clearing them on a new depth made
+    // the candidate list shrink and regrow (layout jitter) and could leave a single line at stop.
+    if (info.multipv === 1) job.depth = Math.max(job.depth, info.depth);
     job.lines[info.multipv - 1] = info;
     job.onInfo?.(job.snapshot());
   }

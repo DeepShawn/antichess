@@ -78,7 +78,8 @@ class StockfishEngine private constructor(private val process: Process) : ChessE
             for (line in output) {
                 if (line.startsWith("bestmove")) return@withLock snapshot(line.split(' ').getOrNull(1))
                 val info = Uci.parseInfo(line) ?: continue
-                if (info.multipv == 1 && info.depth != depth) { depth = info.depth; lines.fill(null) }
+                // Replace lines in place: clearing them per depth made the UI shrink and regrow.
+                if (info.multipv == 1) depth = maxOf(depth, info.depth)
                 if (info.multipv <= lines.size) lines[info.multipv - 1] = EngineLine(info.score, info.pv, info.depth)
                 nps = info.nps
                 onInfo(snapshot())

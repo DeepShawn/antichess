@@ -30,7 +30,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class Mode { PLAY, ANALYSIS }
+/** 人机对战 · 同屏双人 · AI 观战 · 分析 */
+enum class Mode(val label: String) { PLAY("人机"), PVP("双人"), WATCH("观战"), ANALYSIS("分析") }
 
 /** White-perspective evaluation of the position after a given ply. */
 data class Eval(val score: Score, val best: String?, val depth: Int)
@@ -59,8 +60,14 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     var arrows = prefs.getBoolean("arrows", true)
     var coords = prefs.getBoolean("coords", true)
     var preferStockfish = prefs.getBoolean("stockfish", true)
+    var autoFlip = prefs.getBoolean("autoFlip", true)
 
     val level get() = LEVELS[levelIndex]
+    /** Levels of the white and black AI in watch mode. */
+    var watchWhite = 2; private set
+    var watchBlack = 2; private set
+    fun isAI(white: Boolean) = mode == Mode.WATCH || (mode == Mode.PLAY && white != playerWhite)
+    fun levelFor(white: Boolean) = if (mode == Mode.WATCH) LEVELS[if (white) watchWhite else watchBlack] else level
     val preference get() = PREFERENCES.firstOrNull { it.id == preferenceId } ?: PREFERENCES[1]
 
     // Game state
@@ -72,6 +79,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     val grades = HashMap<Int, MoveGrade>()
     val decisions = HashMap<Int, Decision>()
     var thinking = false; private set
+    var paused = false; private set
     var live: AnalysisSnapshot? = null; private set
     var hint: String? = null; private set
     var reviewProgress: Int? = null; private set
@@ -102,7 +110,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     fun saveSettings() {
         prefs.edit().putString("theme", themeId).putString("board", boardId).putInt("level", levelIndex).putString("preference", preferenceId)
             .putBoolean("blunders", blunders).putBoolean("sound", soundOn).putBoolean("evalBar", evalBar).putBoolean("arrows", arrows)
-            .putBoolean("coords", coords).putBoolean("stockfish", preferStockfish).apply()
+            .putBoolean("coords", coords).putBoolean("stockfish", preferStockfish).putBoolean("autoFlip", autoFlip).apply()
     }
 
     suspend fun switchEngine(stockfish: Boolean) {
@@ -149,7 +157,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         }
         val eng = engine ?: return
         job = scope.launch {
-            if (mode == Mode.PLAY && game.whiteToMove != playerWhite) engineTurn(eng, g) else analyzeCurrent(eng, g)
+            if (isAI(game.whiteToMove) && !(mode == Mode.WATCH && paused)) engineTurn(eng, g) else analyzeCurrent(eng, g)
         }
     }
 
@@ -174,7 +182,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
 
     private suspend fun engineTurn(eng: ChessEngine, g: Int) {
         thinking = true; onChange()
-        val lv = level; val ply = game.ply; val fen = game.fen(); val started = System.currentTimeMillis()
+        val lv = levelFor(game.whiteToMove); val ply = game.ply; val fen = game.fen(); val started = System.currentTimeMillis()
         val bookMoves = if (lv.id == "max") emptyList() else book?.candidates(fen).orEmpty()
         val res = eng.analyze(AnalysisRequest(game.startFen, game.uciMoves(), if (preference.sacrifice) maxOf(lv.multipv, 5) else lv.multipv, lv.depth, if (eng.isStockfish) (lv.movetime * 1.6).toLong() else lv.movetime.toLong())) { snap ->
             postInfo(g) { live = snap }
@@ -188,7 +196,8 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         if (choice.source == Personality.Source.BOOK) bookMoves.forEachIndexed { i, b -> candidates.add(Candidate(b.uci, b.san, null, b.name, choice.probs[i])) }
         else res.lines.forEachIndexed { i, l -> candidates.add(Candidate(l.pv.first(), sanOf(fen, l.pv.first()), whiteScore(l, wTurn), null, choice.probs.getOrNull(i), sac = choice.sacs.getOrNull(i))) }
         if (choice.source == Personality.Source.BLUNDER && candidates.none { it.uci == choice.uci }) candidates.add(Candidate(choice.uci, sanOf(fen, choice.uci), null, null, 0.0, slip = true))
-        val wait = 380 + (Math.random() * 380).toLong() - (System.currentTimeMillis() - started)
+        // Spectators need time to follow the game, so AI-vs-AI moves are paced more slowly.
+        val wait = (if (mode == Mode.WATCH) 900 else 380) + (Math.random() * 380).toLong() - (System.currentTimeMillis() - started)
         if (wait > 0) delay(wait)
         if (g != gen) return
         val sac = if (choice.source == Personality.Source.ENGINE) choice.sacrifice else null
@@ -206,6 +215,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
 
     // ───────────── user actions ─────────────
     fun userMove(from: String, to: String, promotion: Char?) {
+        if (mode == Mode.WATCH || (mode == Mode.PVP && !atEnd)) return
         if (mode == Mode.PLAY && (thinking || game.whiteToMove != playerWhite || !atEnd)) return
         if (!atEnd) truncateTo(view)
         val rec = game.move(from + to + (promotion ?: "")) ?: return
@@ -231,9 +241,18 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         job?.cancel(); gen++; thinking = false
         var target = game.ply - 1
         if (mode == Mode.PLAY) { while (target > 0 && turnWhiteAt(target) != playerWhite) target--; if (turnWhiteAt(target) != playerWhite) target = 0 }
+        if (mode == Mode.WATCH) paused = true // stepping back while the AIs keep playing would be pointless
         truncateTo(target); view = game.ply
         persist(); onChange(); schedule()
-        onEvent(UiEvent.Toast("已悔棋"))
+        onEvent(UiEvent.Toast(if (mode == Mode.WATCH) "已后退一步，观战暂停" else "已悔棋"))
+    }
+
+    fun togglePause() {
+        if (mode != Mode.WATCH) return
+        paused = !paused
+        if (paused) { job?.cancel(); gen++; thinking = false }
+        onEvent(UiEvent.Toast(if (paused) "观战已暂停" else "继续观战"))
+        onChange(); schedule()
     }
 
     fun showHint() {
@@ -247,21 +266,32 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     fun setMode(m: Mode) {
         if (m == mode) return
         if (!atEnd) truncateTo(view)
-        mode = m; hint = null
-        if (m == Mode.PLAY) { playerWhite = game.whiteToMove; endShown = false }
-        onEvent(UiEvent.Toast(if (m == Mode.ANALYSIS) "分析模式：双方自由走子，引擎持续分析" else "对局模式：你执${if (playerWhite) "白" else "黑"}，从当前局面继续"))
+        mode = m; hint = null; paused = false
+        if (m != Mode.ANALYSIS) endShown = false
+        if (m == Mode.PLAY) playerWhite = game.whiteToMove
+        onEvent(UiEvent.Toast(when (m) {
+            Mode.PLAY -> "人机对战：你执${if (playerWhite) "白" else "黑"}，从当前局面继续"
+            Mode.PVP -> "双人同屏：轮流在同一块棋盘上走棋"
+            Mode.WATCH -> "AI 观战：白方 ${levelFor(true).name} 对黑方 ${levelFor(false).name}"
+            Mode.ANALYSIS -> "分析模式：双方自由走子，引擎持续分析"
+        }))
         persist(); onChange(); schedule()
     }
 
-    fun newGame(color: String, fen: String = START_FEN) {
+    fun newGame(newMode: Mode, color: String, fen: String = START_FEN, whiteLevel: Int = watchWhite, blackLevel: Int = watchBlack) {
         job?.cancel(); gen++
         val white = when (color) { "w" -> true; "b" -> false; else -> Math.random() < 0.5 }
         game = runCatching { Game(fen.ifBlank { START_FEN }) }.getOrElse { onEvent(UiEvent.Toast(it.message ?: "FEN 不合法")); return }
-        mode = Mode.PLAY; playerWhite = white; view = 0
+        mode = newMode; playerWhite = white; view = 0; paused = false
+        watchWhite = whiteLevel.coerceIn(0, LEVELS.lastIndex); watchBlack = blackLevel.coerceIn(0, LEVELS.lastIndex)
         evals.clear(); grades.clear(); decisions.clear(); thinking = false; hint = null; live = null; endShown = false
         engine?.newGame()
         persist(); onChange(); schedule()
-        onEvent(UiEvent.Toast("新对局 · 你执${if (white) "白" else "黑"} · ${level.name} ${level.elo}"))
+        onEvent(UiEvent.Toast(when (newMode) {
+            Mode.PVP -> "新对局 · 双人同屏"
+            Mode.WATCH -> "AI 观战 · 白方 ${levelFor(true).name} 对黑方 ${levelFor(false).name}"
+            else -> "新对局 · 你执${if (white) "白" else "黑"} · ${level.name} ${level.elo}"
+        }))
     }
 
     fun load(text: String): Boolean {
@@ -302,8 +332,13 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     fun accuracy(white: Boolean) = Review.accuracy(grades.values, white)
 
     fun pgn(): String {
-        val ai = "谱着 ${level.name}"
-        return game.pgn(if (mode == Mode.PLAY) mapOf("White" to if (playerWhite) "你" else ai, "Black" to if (playerWhite) ai else "你") else emptyMap())
+        fun who(white: Boolean) = when {
+            mode == Mode.PVP -> if (white) "玩家一" else "玩家二"
+            isAI(white) -> "谱着 ${levelFor(white).name}"
+            mode == Mode.PLAY -> "你"
+            else -> "?"
+        }
+        return game.pgn(mapOf("White" to who(true), "Black" to who(false)))
     }
 
     // ───────────── persistence ─────────────
@@ -315,6 +350,7 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         })
         prefs.edit().putString("game", JSONObject().apply {
             put("pgn", game.pgn()); put("mode", mode.name); put("playerWhite", playerWhite); put("evals", ev); put("decisions", dec)
+            put("watchWhite", watchWhite); put("watchBlack", watchBlack)
         }.toString()).apply()
     }
 
@@ -327,7 +363,8 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         runCatching {
             val o = JSONObject(raw)
             val g = Game.fromPgn(o.getString("pgn"))
-            game = g; mode = if (o.optString("mode") == "ANALYSIS") Mode.ANALYSIS else Mode.PLAY
+            game = g; mode = Mode.entries.firstOrNull { it.name == o.optString("mode") } ?: Mode.PLAY
+            watchWhite = o.optInt("watchWhite", 2).coerceIn(0, LEVELS.lastIndex); watchBlack = o.optInt("watchBlack", 2).coerceIn(0, LEVELS.lastIndex)
             playerWhite = o.optBoolean("playerWhite", true); view = g.ply; endShown = g.status().over
             o.optJSONObject("evals")?.let { ev -> for (k in ev.keys()) { val e = ev.getJSONObject(k); scoreOf(e)?.let { evals[k.toInt()] = Eval(it, e.optString("best").ifEmpty { null }, e.optInt("depth")) } } }
             o.optJSONObject("decisions")?.let { dec ->
