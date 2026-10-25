@@ -782,7 +782,7 @@ class MainActivity : Activity() {
             addView(crown, lp(dp(88), dp(88)) { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(4) })
             crown.animate().scaleX(1.06f).scaleY(1.06f).setDuration(900).withEndAction { crown.animate().scaleX(1f).scaleY(1f).setDuration(900).start() }.start()
             addView(label("${resultText(st)} · 共 ${(ctl.game.ply + 1) / 2} 回合", 13.5f, pal.muted).apply { gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(16)) }, lp(-1, -2))
-            addView(button("复盘本局", primary = true) { dialog.dismiss(); ctl.setMode(Mode.ANALYSIS); ctl.seek(0); ctl.review(); syncOrientation(); render() }, lp(-1, -2))
+            addView(button("复盘本局", primary = true) { dialog.dismiss(); ctl.setMode(Mode.ANALYSIS, carry = true); ctl.seek(0); ctl.review(); syncOrientation(); render() }, lp(-1, -2))
             val row = LinearLayout(context)
             row.addView(button("再来一局") { dialog.dismiss(); newGameDialog() }, lp(0, -2, 1f))
             row.addView(button("导出") { dialog.dismiss(); shareDialog() }, lp(0, -2, 1f) { marginStart = dp(8) })
