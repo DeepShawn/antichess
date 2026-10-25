@@ -34,6 +34,8 @@ const state = {
   game: new Game(), mode: 'play', playerColor: 'w', view: 0, watch: { w: 2, b: 2 }, paused: false,
   evals: [], notes: [], choices: [], lines: [], live: null,
   thinking: false, hint: null, token: 0, reviewing: false, endShown: false,
+  // Each mode keeps its own game: switching modes parks the current one here and resumes the target's.
+  slots: {},
 };
 let book = null, board = null, graph = null;
 const engine = new EngineClient();
@@ -94,11 +96,30 @@ function regrade(p) {
   state.notes[p] = { ...g, mover: rec.color };
 }
 
-function persist() {
-  store.set('game', {
-    pgn: state.game.pgn(), mode: state.mode, playerColor: state.playerColor, watch: state.watch,
-    evals: state.evals, notes: state.notes, choices: state.choices, level: settings.level,
+/** Serialisable snapshot of the current mode's game. */
+const slotOf = () => ({
+  pgn: state.game.pgn(), playerColor: state.playerColor, paused: state.paused,
+  evals: state.evals, notes: state.notes, choices: state.choices,
+});
+
+/** Makes `slot` (or a fresh game when absent/corrupt) the current game. */
+function applySlot(slot) {
+  let g = null;
+  try { if (slot?.pgn) g = Game.fromPgn(slot.pgn); } catch { /* corrupt slot: start fresh */ }
+  const fresh = !g;
+  Object.assign(state, {
+    game: g || new Game(), view: g ? g.ply : 0, playerColor: slot?.playerColor === 'b' ? 'b' : 'w', paused: !!slot?.paused && !fresh,
+    evals: fresh ? [] : slot.evals || [], notes: fresh ? [] : slot.notes || [], choices: fresh ? [] : slot.choices || [],
+    lines: [], live: null, thinking: false, hint: null, endShown: g ? g.status().over : false,
   });
+  return !fresh;
+}
+
+const orient = () => board.setOrientation(state.mode === 'play' ? state.playerColor : state.mode === 'pvp' && settings.autoFlip ? state.game.turn() : 'w');
+
+function persist() {
+  state.slots[state.mode] = slotOf();
+  store.set('game', { v: 2, mode: state.mode, watch: state.watch, level: settings.level, slots: state.slots });
 }
 
 // ───────────────────────── engine orchestration ─────────────────────────
@@ -249,28 +270,34 @@ function hint() {
   toast(`提示：${uciToSan(state.game.fen(), ev.best)}`);
 }
 
-function setMode(mode) {
-  if (mode === state.mode) return;
-  if (!atEnd()) truncateTo(state.view);
-  state.mode = mode; state.hint = null; state.paused = false;
-  if (mode !== 'analysis') state.endShown = false;
-  if (mode === 'play') { state.playerColor = state.game.turn(); board.setOrientation(state.playerColor); }
-  if (mode === 'pvp' && settings.autoFlip) board.setOrientation(state.game.turn());
-  toast({
-    play: `人机对战：你执${sideName(state.playerColor)}，从当前局面继续`,
+/** Switches mode, resuming that mode's own game. `carry` copies the current game over instead (e.g. 复盘本局 → analysis). */
+function setMode(mode, { carry = false } = {}) {
+  if (mode === state.mode || !MODES.includes(mode)) return;
+  state.token++; engine.cancel(); engine.newGame();
+  state.slots[state.mode] = slotOf();
+  if (carry) state.slots[mode] = JSON.parse(JSON.stringify({ ...slotOf(), paused: false }));
+  state.mode = mode;
+  const resumed = applySlot(state.slots[mode]);
+  orient();
+  const name = { play: '人机对战', pvp: '双人同屏', watch: 'AI 观战', analysis: '分析模式' }[mode];
+  toast(resumed && state.game.ply ? `${name} · 已恢复该模式的局面（第 ${Math.ceil(state.game.ply / 2)} 回合）` : {
+    play: `人机对战：你执${sideName(state.playerColor)}，新的一局`,
     pvp: '双人同屏：轮流在同一块棋盘上走棋',
     watch: `AI 观战：白方 ${levelFor('w').name} 对黑方 ${levelFor('b').name}`,
     analysis: '分析模式：双方自由走子，引擎持续分析',
   }[mode]);
-  persist(); render(); schedule();
+  persist(); render(true); schedule();
 }
 
 function newGame({ mode = 'play', color = 'w', fen = START_FEN, watch = state.watch } = {}) {
   state.token++; engine.cancel(); engine.newGame();
   const side = color === 'random' ? (Math.random() < 0.5 ? 'w' : 'b') : color;
-  try { state.game = new Game(fen || START_FEN); } catch (e) { toast(e.message, 'bad'); return; }
+  let g;
+  try { g = new Game(fen || START_FEN); } catch (e) { toast(e.message, 'bad'); return; }
+  if (mode !== state.mode) state.slots[state.mode] = slotOf();
+  state.game = g;
   Object.assign(state, { mode, playerColor: side, watch: { ...watch }, paused: false, view: 0, evals: [], notes: [], choices: [], lines: [], live: null, thinking: false, hint: null, endShown: false });
-  board.setOrientation(mode === 'play' ? side : mode === 'pvp' && settings.autoFlip ? state.game.turn() : 'w');
+  orient();
   persist(); render(true); schedule();
   toast(mode === 'pvp' ? '新对局 · 双人同屏' : mode === 'watch' ? `AI 观战 · 白方 ${levelFor('w').name} 对黑方 ${levelFor('b').name}` : `新对局 · 你执${sideName(side)} · ${level().name} ${level().elo}`);
 }
@@ -281,7 +308,8 @@ function loadText(text) {
   try {
     const g = /^[rnbqkpRNBQKP1-8]+(\/[rnbqkpRNBQKP1-8]+){7}\s/.test(t) ? new Game(t) : Game.fromPgn(t);
     state.token++; engine.cancel();
-    Object.assign(state, { game: g, mode: 'analysis', view: g.ply, evals: [], notes: [], choices: [], lines: [], live: null, thinking: false, hint: null, endShown: true });
+    if (state.mode !== 'analysis') state.slots[state.mode] = slotOf();
+    Object.assign(state, { game: g, mode: 'analysis', paused: false, view: g.ply, evals: [], notes: [], choices: [], lines: [], live: null, thinking: false, hint: null, endShown: true });
     persist(); render(true); schedule();
     toast(g.ply ? `已导入 ${g.ply} 步棋谱，正在自动复盘` : '已载入局面，进入分析模式', 'good');
     if (g.ply > 1) reviewGame();
@@ -691,7 +719,7 @@ function wire() {
   // Game over dialog
   const od = $('#overDialog');
   od.querySelector('#overNew').onclick = () => { od.close(); openNewGame(); };
-  od.querySelector('#overReview').onclick = () => { od.close(); setMode('analysis'); seek(0); reviewGame(); };
+  od.querySelector('#overReview').onclick = () => { od.close(); setMode('analysis', { carry: true }); seek(0); reviewGame(); };
   od.querySelector('#overShare').onclick = () => { od.close(); openShare(); };
 
   for (const d of $$('dialog')) d.addEventListener('click', e => { if (e.target === d) d.close(); });
@@ -726,26 +754,26 @@ function wire() {
 }
 
 function restore() {
+  const saved = store.get('game', null);
+  if (saved?.watch && LEVELS[saved.watch.w] && LEVELS[saved.watch.b]) state.watch = saved.watch;
+  if (saved?.slots && typeof saved.slots === 'object') {
+    for (const m of MODES) if (saved.slots[m]) state.slots[m] = saved.slots[m];
+  } else if (saved?.pgn) {
+    // pre-2.2.2 save: a single game shared by every mode
+    state.slots[MODES.includes(saved.mode) ? saved.mode : 'play'] = saved;
+  }
   const params = new URLSearchParams(location.search);
   if (params.has('fen') || params.has('moves')) {
     try {
       const g = new Game(params.get('fen') || START_FEN);
       for (const s of (params.get('moves') || '').split(/\s+/).filter(Boolean)) if (!g.move(s)) break;
-      Object.assign(state, { game: g, mode: 'analysis', view: g.ply, endShown: true });
+      state.slots.analysis = { pgn: g.pgn() };
+      state.mode = 'analysis';
       history.replaceState(null, '', location.pathname);
-      return;
-    } catch { /* fall through to the saved game */ }
+    } catch { /* ignore a malformed share link */ }
   }
-  const saved = store.get('game', null);
-  if (!saved) return;
-  try {
-    const g = Game.fromPgn(saved.pgn);
-    Object.assign(state, {
-      game: g, mode: MODES.includes(saved.mode) ? saved.mode : 'play', playerColor: saved.playerColor === 'b' ? 'b' : 'w', view: g.ply,
-      watch: saved.watch && LEVELS[saved.watch.w] && LEVELS[saved.watch.b] ? saved.watch : state.watch,
-      evals: saved.evals || [], notes: saved.notes || [], choices: saved.choices || [], endShown: g.status().over,
-    });
-  } catch { /* corrupt save: start fresh */ }
+  if (state.mode !== 'analysis') state.mode = MODES.includes(saved?.mode) ? saved.mode : 'play';
+  applySlot(state.slots[state.mode]);
 }
 
 async function boot() {
@@ -756,7 +784,7 @@ async function boot() {
   board = new Board($('#board'), { onMove: onUserMove });
   graph = new EvalGraph($('#graph'), seek);
   restore();
-  board.setOrientation(state.mode === 'play' ? state.playerColor : state.mode === 'pvp' && settings.autoFlip ? state.game.turn() : 'w');
+  orient();
   wire();
   render();
   document.body.classList.add('ready');

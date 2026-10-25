@@ -1,5 +1,5 @@
 // Offline support: precache the app shell, then serve cache-first and refresh in the background.
-const VERSION = 'puzhe-2.2.1';
+const VERSION = 'puzhe-2.2.2';
 const SHELL = [
   './', 'index.html', 'styles/app.css', 'manifest.webmanifest', 'assets/icon.svg',
   'src/main.js', 'src/core/chess.js', 'src/core/book.js',

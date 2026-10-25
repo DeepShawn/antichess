@@ -90,6 +90,8 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     var book: OpeningBook? = null; private set
     private var endShown = false
     private var background = false
+    /** Each mode keeps its own game: switching modes parks the current one here and resumes the target's. */
+    private val slots = HashMap<Mode, JSONObject>()
     private var job: Job? = null
     private var gen = 0
 
@@ -291,14 +293,18 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         onEvent(UiEvent.Toast("提示：${sanOf(game.fen(), best)}"))
     }
 
-    fun setMode(m: Mode) {
+    /** Switches mode, resuming that mode's own game. [carry] copies the current game over instead (复盘本局 → analysis). */
+    fun setMode(m: Mode, carry: Boolean = false) {
         if (m == mode) return
-        if (!atEnd) truncateTo(view)
-        mode = m; hint = null; paused = false
-        if (m != Mode.ANALYSIS) endShown = false
-        if (m == Mode.PLAY) playerWhite = game.whiteToMove
-        onEvent(UiEvent.Toast(when (m) {
-            Mode.PLAY -> "人机对战：你执${if (playerWhite) "白" else "黑"}，从当前局面继续"
+        job?.cancel(); gen++
+        val current = slotOf()
+        slots[mode] = current
+        if (carry) slots[m] = JSONObject(current.toString()).put("paused", false)
+        mode = m
+        val resumed = applySlot(slots[m])
+        engine?.newGame()
+        onEvent(UiEvent.Toast(if (resumed && game.ply > 0) "${when (m) { Mode.PLAY -> "人机对战"; Mode.PVP -> "双人同屏"; Mode.WATCH -> "AI 观战"; Mode.ANALYSIS -> "分析模式" }} · 已恢复该模式的局面（第 ${(game.ply + 1) / 2} 回合）" else when (m) {
+            Mode.PLAY -> "人机对战：你执${if (playerWhite) "白" else "黑"}，新的一局"
             Mode.PVP -> "双人同屏：轮流在同一块棋盘上走棋"
             Mode.WATCH -> "AI 观战：白方 ${levelFor(true).name} 对黑方 ${levelFor(false).name}"
             Mode.ANALYSIS -> "分析模式：双方自由走子，引擎持续分析"
@@ -309,7 +315,9 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     fun newGame(newMode: Mode, color: String, fen: String = START_FEN, whiteLevel: Int = watchWhite, blackLevel: Int = watchBlack) {
         job?.cancel(); gen++
         val white = when (color) { "w" -> true; "b" -> false; else -> Math.random() < 0.5 }
-        game = runCatching { Game(fen.ifBlank { START_FEN }) }.getOrElse { onEvent(UiEvent.Toast(it.message ?: "FEN 不合法")); return }
+        val g = runCatching { Game(fen.ifBlank { START_FEN }) }.getOrElse { onEvent(UiEvent.Toast(it.message ?: "FEN 不合法")); return }
+        if (newMode != mode) slots[mode] = slotOf()
+        game = g
         mode = newMode; playerWhite = white; view = 0; paused = false
         watchWhite = whiteLevel.coerceIn(0, LEVELS.lastIndex); watchBlack = blackLevel.coerceIn(0, LEVELS.lastIndex)
         evals.clear(); grades.clear(); decisions.clear(); thinking = false; hint = null; live = null; endShown = false
@@ -328,7 +336,8 @@ class GameController(context: Context, private val scope: CoroutineScope) {
         val g = runCatching { if (Regex("^[rnbqkpRNBQKP1-8]+(/[rnbqkpRNBQKP1-8]+){7}\\s").containsMatchIn(t)) Game(t) else Game.fromPgn(t) }
             .getOrElse { onEvent(UiEvent.Toast(it.message ?: "无法识别的 PGN / FEN")); return false }
         job?.cancel(); gen++
-        game = g; mode = Mode.ANALYSIS; view = g.ply
+        if (mode != Mode.ANALYSIS) slots[mode] = slotOf()
+        game = g; mode = Mode.ANALYSIS; view = g.ply; paused = false
         evals.clear(); grades.clear(); decisions.clear(); thinking = false; hint = null; live = null; endShown = true
         persist(); onChange()
         onEvent(UiEvent.Toast(if (g.ply > 0) "已导入 ${g.ply} 步棋谱，正在自动复盘" else "已载入局面，进入分析模式"))
@@ -370,15 +379,21 @@ class GameController(context: Context, private val scope: CoroutineScope) {
     }
 
     // ───────────── persistence ─────────────
-    fun persist() {
+    /** Serialisable snapshot of the current mode's game. */
+    private fun slotOf(): JSONObject {
         val ev = JSONObject(); for ((k, v) in evals) ev.put(k.toString(), JSONObject().apply { v.score.cp?.let { put("cp", it) }; v.score.mate?.let { put("mate", it) }; put("best", v.best ?: ""); put("depth", v.depth) })
         val dec = JSONObject(); for ((k, d) in decisions) dec.put(k.toString(), JSONObject().apply {
             put("source", d.source.name); put("rank", d.rank); put("uci", d.uci); put("depth", d.depth); put("sac", d.sacrifice?.name ?: ""); put("sacAmount", d.sacAmount)
             put("candidates", JSONArray().apply { d.candidates.forEach { c -> put(JSONObject().apply { put("uci", c.uci); put("san", c.san); c.score?.cp?.let { put("cp", it) }; c.score?.mate?.let { put("mate", it) }; put("label", c.label ?: ""); put("prob", c.prob ?: -1.0); put("slip", c.slip); put("sac", c.sac?.name ?: "") }) } })
         })
+        return JSONObject().apply { put("pgn", game.pgn()); put("playerWhite", playerWhite); put("paused", paused); put("evals", ev); put("decisions", dec) }
+    }
+
+    fun persist() {
+        slots[mode] = slotOf()
+        val all = JSONObject(); for ((m, o) in slots) all.put(m.name, o)
         prefs.edit().putString("game", JSONObject().apply {
-            put("pgn", game.pgn()); put("mode", mode.name); put("playerWhite", playerWhite); put("evals", ev); put("decisions", dec)
-            put("watchWhite", watchWhite); put("watchBlack", watchBlack)
+            put("v", 2); put("mode", mode.name); put("watchWhite", watchWhite); put("watchBlack", watchBlack); put("slots", all)
         }.toString()).apply()
     }
 
@@ -386,24 +401,40 @@ class GameController(context: Context, private val scope: CoroutineScope) {
 
     private fun scoreOf(o: JSONObject): Score? = when { o.has("mate") -> Score(mate = o.getInt("mate")); o.has("cp") -> Score(cp = o.getInt("cp")); else -> null }
 
-    private fun restore() {
-        val raw = prefs.getString("game", null) ?: return
-        runCatching {
-            val o = JSONObject(raw)
+    /** Makes [o] (or a fresh game when absent or corrupt) the current game; true if a saved game was resumed. */
+    private fun applySlot(o: JSONObject?): Boolean {
+        evals.clear(); grades.clear(); decisions.clear()
+        thinking = false; hint = null; live = null
+        val ok = o != null && runCatching {
             val g = Game.fromPgn(o.getString("pgn"))
-            game = g; mode = Mode.entries.firstOrNull { it.name == o.optString("mode") } ?: Mode.PLAY
-            watchWhite = o.optInt("watchWhite", 2).coerceIn(0, LEVELS.lastIndex); watchBlack = o.optInt("watchBlack", 2).coerceIn(0, LEVELS.lastIndex)
-            playerWhite = o.optBoolean("playerWhite", true); view = g.ply; endShown = g.status().over
-            o.optJSONObject("evals")?.let { ev -> for (k in ev.keys()) { val e = ev.getJSONObject(k); scoreOf(e)?.let { evals[k.toInt()] = Eval(it, e.optString("best").ifEmpty { null }, e.optInt("depth")) } } }
+            val ev = HashMap<Int, Eval>(); val ds = HashMap<Int, Decision>()
+            o.optJSONObject("evals")?.let { e -> for (k in e.keys()) { val x = e.getJSONObject(k); scoreOf(x)?.let { ev[k.toInt()] = Eval(it, x.optString("best").ifEmpty { null }, x.optInt("depth")) } } }
             o.optJSONObject("decisions")?.let { dec ->
                 for (k in dec.keys()) {
                     val d = dec.getJSONObject(k); val arr = d.getJSONArray("candidates")
                     val cands = (0 until arr.length()).map { i -> val c = arr.getJSONObject(i); Candidate(c.getString("uci"), c.getString("san"), scoreOf(c), c.optString("label").ifEmpty { null }, c.optDouble("prob", -1.0).takeIf { it >= 0 }, c.optBoolean("slip"), sacOf(c.optString("sac"))) }
-                    decisions[k.toInt()] = Decision(Personality.Source.valueOf(d.getString("source")), d.getInt("rank"), d.getString("uci"), cands, d.optInt("depth"), sacOf(d.optString("sac")), d.optInt("sacAmount"))
+                    ds[k.toInt()] = Decision(Personality.Source.valueOf(d.getString("source")), d.getInt("rank"), d.getString("uci"), cands, d.optInt("depth"), sacOf(d.optString("sac")), d.optInt("sacAmount"))
                 }
             }
+            game = g; evals.putAll(ev); decisions.putAll(ds)
+            playerWhite = o.optBoolean("playerWhite", true); paused = o.optBoolean("paused")
+            view = g.ply; endShown = g.status().over
             for (p in 1..g.ply) regrade(p)
-        }.onFailure { game = Game(); evals.clear(); decisions.clear() }
+        }.isSuccess
+        if (!ok) { game = Game(); playerWhite = true; paused = false; view = 0; endShown = false; evals.clear(); decisions.clear() }
+        return ok
+    }
+
+    private fun restore() {
+        val o = prefs.getString("game", null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+        if (o != null) {
+            mode = Mode.entries.firstOrNull { it.name == o.optString("mode") } ?: Mode.PLAY
+            watchWhite = o.optInt("watchWhite", 2).coerceIn(0, LEVELS.lastIndex); watchBlack = o.optInt("watchBlack", 2).coerceIn(0, LEVELS.lastIndex)
+            val saved = o.optJSONObject("slots")
+            if (saved != null) { for (m in Mode.entries) saved.optJSONObject(m.name)?.let { slots[m] = it } }
+            else if (o.has("pgn")) slots[mode] = o // pre-2.2.2 save: a single game shared by every mode
+        }
+        applySlot(slots[mode])
     }
 
     fun close() { job?.cancel(); engine?.close() }
